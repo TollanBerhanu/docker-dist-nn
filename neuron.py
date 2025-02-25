@@ -1,6 +1,7 @@
 import os
 import socket
 import json
+import threading
 
 # Read configuration from environment
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8000"))
@@ -40,3 +41,16 @@ def handle_client(conn, addr):
         print("Error handling connection:", e)
     finally:
         conn.close()
+
+def server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # Bind to all interfaces
+        s.bind(("", LISTEN_PORT))
+        s.listen()
+        print(f"Worker listening on port {LISTEN_PORT}...")
+        while True:
+            conn, addr = s.accept()
+            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+
+if __name__ == "__main__":
+    server()
