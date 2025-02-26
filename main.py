@@ -1,6 +1,8 @@
 import docker
 import socket
 import json
+import time
+import threading
 
 NUM_CONTAINERS = 3  # For example, create a chain of 3 containers
 FIRST_CONTAINER_HOST_PORT = 8001  # We'll map the first container's internal port 8001 to host's 8001
@@ -79,3 +81,43 @@ def callback_server():
                 final_result = json.loads(data)
                 print("Final result received:", final_result)
 
+# Run the callback server in a separate thread
+callback_thread = threading.Thread(target=callback_server, daemon=True)
+callback_thread.start()
+
+# Give containers a moment to start up
+time.sleep(3)
+
+# Prepare the input JSON and measure time
+input_data = {"message": "Hello", "counter": 0}
+input_json = json.dumps(input_data).encode()
+
+start_time = time.time()
+
+# Send the input to the first container
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.connect(("localhost", FIRST_CONTAINER_HOST_PORT))
+    s.sendall(input_json)
+print("Input sent to first container.")
+
+# Wait for the callback to receive the final result (with a timeout for safety)
+timeout = 10  # seconds
+callback_thread.join(timeout)
+elapsed_time = time.time() - start_time
+
+if final_result is not None:
+    print("Final output:", final_result)
+    print("Total time taken: {:.3f} seconds".format(elapsed_time))
+else:
+    print("No response received within the timeout period.")
+
+# Optionally, you can later reuse the chain by sending new inputs to the first container.
+# (Remember to clean up the containers and network when done.)
+for container in containers:
+    print(f"Stopping and removing container {container.name}")
+    container.stop()
+    container.remove()
+print("Removing network", network_name)
+network.remove()
+print("All containers and network removed.")
+# The chain is now cleaned up and ready for reuse.
