@@ -1,4 +1,6 @@
 import docker
+import socket
+import json
 
 NUM_CONTAINERS = 3  # For example, create a chain of 3 containers
 FIRST_CONTAINER_HOST_PORT = 8001  # We'll map the first container's internal port 8001 to host's 8001
@@ -63,3 +65,17 @@ for i in range(1, NUM_CONTAINERS + 1):
 
 # Start a callback server to receive the final output
 final_result = None
+
+def callback_server():
+    global final_result
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", CALLBACK_PORT))
+        s.listen()
+        print(f"Callback server listening on port {CALLBACK_PORT}...")
+        conn, addr = s.accept()
+        with conn:
+            data = conn.recv(4096).decode()
+            if data:
+                final_result = json.loads(data)
+                print("Final result received:", final_result)
+
