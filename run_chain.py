@@ -47,6 +47,10 @@ for i in range(1, num_containers + 1):
     
     ports = {}
     if i == 1: # Only the first container is accessible from the host
+        '''
+        If i == 1, it binds listen_port from the host to container_port inside the container.
+        Otherwise, the container is only accessible within the Docker network.
+        '''
         ports = {f"{listen_port}/tcp": container_port}
     
     print(f"Starting container {container_name} on port {listen_port} with NEXT_HOST={next_host}, NEXT_PORT={next_port}")
@@ -90,13 +94,13 @@ start_time = time.time() # Start timer
 
 # Send the input to the first container
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect(("localhost", container_port))
+    s.connect(("0.0.0.0", container_port))
     s.sendall(input_json)
 print("Input sent to first container.")
 
 # Wait for the callback to receive the final result
 timeout = 10  # timeout to receive the result (10 seconds)
-callback_thread.join(timeout)
+callback_thread.join(timeout) # Wait for the callback thread to finish
 elapsed_time = time.time() - start_time # Calculate elapsed time
 
 if final_result is not None:

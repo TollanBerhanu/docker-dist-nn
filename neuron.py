@@ -15,6 +15,9 @@ def process_payload(payload: dict) -> dict:
     return payload
 
 def handle_client(conn, addr):
+    '''
+    Handle incoming connections and process the payload.
+    '''
     try:
         payload = conn.recv(1024).decode() # use 1KB buffer
         if not payload:
