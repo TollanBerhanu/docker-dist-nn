@@ -4,116 +4,159 @@ import json
 import time
 import threading
 
-num_containers = 5
-container_port = 8001  # Port no. of the first container
-callback_port = 9000  # Port no. of the final output
+CONFIG_FILE = "config_cali_housing.json"
+CALLBACK_PORT = 9000
+BASE_PORT_FIRST_HIDDEN = 8100    # Base port for the first hidden layer
+BASE_PORT_INCREMENT = 100        # Increment per layer
 
-# Create a Docker client
+# Load configuration
+with open(CONFIG_FILE, "r") as f:
+    config = json.load(f)
+
+layers = config["layers"]
+# Input layer
+input_layer = layers[0]
+input_values = input_layer["values"]
+num_input = input_layer["nodes"]
+
+# Pre-calculate container mapping for each layer (all layers after input)
+# Mapping: for each layer index i (i>=1), generate a list of dicts with container name and listen port.
+neuron_mappings = {}
+for layer_index in range(1, len(layers)):
+    layer = layers[layer_index]
+    num_neurons = layer["nodes"]
+    # Use a different port range per layer. For layer 1, start at BASE_PORT_FIRST_HIDDEN;
+    # for later layers, add BASE_PORT_INCREMENT per layer.
+    base_port = BASE_PORT_FIRST_HIDDEN + (layer_index - 1) * BASE_PORT_INCREMENT
+    mapping = []
+    for j in range(num_neurons):
+        if layer["type"] == "output":
+            container_name = f"nn_output_{j}"
+        else:
+            # For hidden layers, include the layer index in the name
+            container_name = f"nn_hidden_{layer_index-1}_{j}"
+        port = base_port + j + 1
+        mapping.append({"name": container_name, "port": port})
+    neuron_mappings[layer_index] = mapping
+
+# Create Docker client and network
 client = docker.from_env()
-
-network_name = "chain_network"
+network_name = "fcnn_network"
 try:
-    # Create a Docker network
     network = client.networks.create(network_name, driver="bridge")
-    network_details = network.attrs
-    gateway_ip = network_details['IPAM']['Config'][0]['Gateway'] # Get the gateway IP of the Docker network
-    print("Using gateway IP for final container:", gateway_ip)
-except Exception as e:
-    print("Network already exists, using existing network...")
+except Exception:
     network = client.networks.get(network_name)
 
-containers = []
-for i in range(1, num_containers + 1):
-    container_name = f"chain_container_{i}"
-    listen_port = 8000 + i  # Each container listens on its own port (e.g., 8001, 8002, …)
-    
-    # Determine next destination:
-    if i < num_containers:
-        # Next container is the one with name chain_container_{i+1} on port 8000+(i+1)
-        next_host = f"chain_container_{i+1}"
-        next_port = str(8000 + i + 1)
-    else:
-        # For the final container, set the next host to the host machine
-        next_host = gateway_ip  # for Mac/Windows: next_host = "host.docker.internal".
-        next_port = str(callback_port)
-    
-    # Set environment variabless to pass to the container
-    env = {
-        "LISTEN_PORT": str(listen_port),
-        "NEXT_HOST": next_host,
-        "NEXT_PORT": next_port,
-        "PAYLOAD_STR": f" >> Container {i}"
-    }
-    
-    ports = {}
-    if i == 1: # Only the first container is accessible from the host
-        '''
-        If i == 1, it binds listen_port from the host to container_port inside the container.
-        Otherwise, the container is only accessible within the Docker network.
-        '''
-        ports = {f"{listen_port}/tcp": container_port}
-    
-    print(f"Starting container {container_name} on port {listen_port} with NEXT_HOST={next_host}, NEXT_PORT={next_port}")
-    container = client.containers.run(
-        "chain_image",  # the image built from the Dockerfile above
-        detach=True,
-        name=container_name,
-        network=network_name,
-        environment=env,
-        ports=ports  # only container 1 is accessible from the host script
-    )
-    containers.append(container)
+# For Linux, get the Docker network gateway IP (to reach host callback)
+network_details = network.attrs
+gateway_ip = network_details['IPAM']['Config'][0]['Gateway']
+print("Gateway IP for callback:", gateway_ip)
 
-# Start a callback server to receive the final output
+containers = {}
+
+# Spawn containers for each neuron in layers 1 to end
+for layer_index in range(1, len(layers)):
+    layer = layers[layer_index]
+    neurons = layer.get("neurons", [])
+    num_neurons = layer["nodes"]
+    # Expected inputs equals the number of neurons (or input nodes) in the previous layer
+    if layer_index == 1:
+        expected_inputs = num_input
+    else:
+        expected_inputs = layers[layer_index - 1]["nodes"]
+    for j in range(num_neurons):
+        mapping = neuron_mappings[layer_index][j]
+        container_name = mapping["name"]
+        listen_port = mapping["port"]
+
+        # Determine next nodes: if not the final layer, forward to all neurons in the next layer.
+        # Otherwise (for final layer) forward to the callback server.
+        if layer_index < len(layers) - 1:
+            next_mapping = neuron_mappings[layer_index + 1]
+            next_nodes = [{"host": m["name"], "port": str(m["port"])} for m in next_mapping]
+        else:
+            next_nodes = [{"host": gateway_ip, "port": str(CALLBACK_PORT)}]
+
+        neuron_config = neurons[j]
+        weights = neuron_config["weights"]
+        bias = neuron_config["bias"]
+        activation = neuron_config["activation"]
+        env = {
+            "LISTEN_PORT": str(listen_port),
+            "EXPECTED_INPUTS": str(expected_inputs),
+            "WEIGHTS": json.dumps(weights),
+            "BIAS": str(bias),
+            "ACTIVATION": activation,
+            "NEXT_NODES": json.dumps(next_nodes)
+        }
+
+        # For the first hidden layer, publish the container port so that the controller can send inputs
+        ports = None
+        if layer_index == 1:
+            ports = {f"{listen_port}/tcp": listen_port}
+            print(f"Starting hidden neuron container {container_name} on port {listen_port}")
+        else:
+            if layer["type"] == "hidden":
+                print(f"Starting hidden neuron container {container_name} on port {listen_port}")
+            else:
+                print(f"Starting output neuron container {container_name} on port {listen_port}")
+
+        container = client.containers.run(
+            "fcnn_image",  # Make sure to build your image with: docker build -t fcnn_image .
+            detach=True,
+            name=container_name,
+            network=network_name,
+            environment=env,
+            ports=ports
+        )
+        containers[container_name] = container
+
+# Callback server to receive final output
 final_result = None
 def callback_server():
     global final_result
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("0.0.0.0", callback_port))
+        s.bind(("", CALLBACK_PORT))
         s.listen()
-        print(f"Callback server listening on port {callback_port}...")
+        print(f"Callback server listening on port {CALLBACK_PORT}...")
         conn, addr = s.accept()
         with conn:
-            data = conn.recv(4096).decode()
+            data = conn.recv(1024).decode()
             if data:
-                final_result = json.loads(data)
+                msg = json.loads(data)
+                final_result = msg.get("value")
                 print("Final result received:", final_result)
 
-# # Run the callback server in a separate thread
 callback_thread = threading.Thread(target=callback_server, daemon=True)
 callback_thread.start()
 
-# Give the containers a moment to start up
-time.sleep(num_containers)
+# Allow time for containers to start up
+time.sleep(5)
+start_time = time.time()
 
-# Prepare the input payload in JSON 
-input_data = {"message": "Hello", "counter": 0}
-input_json = json.dumps(input_data).encode()
+# For the first hidden layer, send each input value to every neuron
+for mapping in neuron_mappings[1]:
+    for idx, val in enumerate(input_values):
+        msg = json.dumps({"value": val, "index": idx}).encode()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect(("localhost", mapping["port"]))
+            s.sendall(msg)
+        # Short delay to help preserve order if needed
+        time.sleep(0.1)
 
-start_time = time.time() # Start timer
-
-# Send the input to the first container
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect(("0.0.0.0", container_port))
-    s.sendall(input_json)
-print("Input sent to first container.")
-
-# Wait for the callback to receive the final result
-timeout = 10  # timeout to receive the result (10 seconds)
-callback_thread.join(timeout) # Wait for the callback thread to finish
-elapsed_time = time.time() - start_time # Calculate elapsed time
+callback_thread.join(timeout=10)
+elapsed_time = time.time() - start_time
 
 if final_result is not None:
-    print("Final output:", final_result)
-    print("Total time taken: {:.3f} seconds".format(elapsed_time))
+    print("Final output from neural network:", final_result)
+    print("Total processing time: {:.3f} seconds".format(elapsed_time))
 else:
-    print("No response received within the timeout period.")
+    print("No result received within the timeout period.")
 
-# Clean up the containers and network when done.
-for container in containers:
+# Cleanup: stop and remove all containers and the network.
+for container in containers.values():
     print(f"Stopping and removing container {container.name}")
     container.stop()
     container.remove()
 print("Removing network", network_name)
 network.remove()
-print("All containers and network removed.")
