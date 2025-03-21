@@ -1,4 +1,3 @@
-# worker_neuron.py
 import os
 import socket
 import json

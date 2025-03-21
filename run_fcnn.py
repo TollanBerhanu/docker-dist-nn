@@ -4,9 +4,9 @@ import json
 import time
 import threading
 
-CONFIG_FILE = "config_cali_housing.json"
+CONFIG_FILE = "config_cali.json"
 CALLBACK_PORT = 9000
-BASE_PORT_FIRST_HIDDEN = 8100    # Base port for the first hidden layer
+BASE_PORT_FIRST_HIDDEN = 7100    # Base port for the first hidden layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
 
 # Load configuration
@@ -131,7 +131,7 @@ callback_thread = threading.Thread(target=callback_server, daemon=True)
 callback_thread.start()
 
 # Allow time for containers to start up
-time.sleep(5)
+time.sleep(10)
 start_time = time.time()
 
 # For the first hidden layer, send each input value to every neuron
@@ -142,7 +142,7 @@ for mapping in neuron_mappings[1]:
             s.connect(("localhost", mapping["port"]))
             s.sendall(msg)
         # Short delay to help preserve order if needed
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 callback_thread.join(timeout=10)
 elapsed_time = time.time() - start_time
