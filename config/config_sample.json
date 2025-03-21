@@ -1,0 +1,38 @@
+{
+    "layers": [
+      {
+        "type": "input",
+        "nodes": 2,
+        "values": [0.5, 0.8]
+      },
+      {
+        "type": "hidden",
+        "nodes": 3,
+        "neurons": [
+           {"weights": [0.1, 0.2], "bias": 0.3, "activation": "relu"},
+           {"weights": [0.4, 0.5], "bias": 0.6, "activation": "relu"},
+           {"weights": [0.7, 0.8], "bias": 0.9, "activation": "relu"}
+        ]
+      },
+      {
+        "type": "hidden",
+        "nodes": 6,
+        "neurons": [
+           {"weights": [0.1, 0.2], "bias": 0.3, "activation": "relu"},
+           {"weights": [0.4, 0.5], "bias": 0.6, "activation": "relu"},
+           {"weights": [0.7, 0.8], "bias": 0.9, "activation": "relu"},
+           {"weights": [0.1, 0.2], "bias": 0.3, "activation": "relu"},
+           {"weights": [0.4, 0.5], "bias": 0.6, "activation": "relu"},
+           {"weights": [0.7, 0.8], "bias": 0.9, "activation": "relu"}
+        ]
+      },
+      {
+        "type": "output",
+        "nodes": 1,
+        "neurons": [
+           {"weights": [1.0, 1.1, 1.2], "bias": 0.5, "activation": "sigmoid"}
+        ]
+      }
+    ]
+  }
+  
