@@ -4,7 +4,7 @@ import json
 import time
 import threading
 
-CONFIG_FILE = "config_cali.json"
+CONFIG_FILE = "config/config_cali.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 7100    # Base port for the first hidden layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
