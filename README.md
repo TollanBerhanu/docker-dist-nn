@@ -5,14 +5,14 @@ Run this commands in the root directory to get started:
 
 - Build the image
 ``` bash
-docker build -t chain_image .
+docker build -t fcnn_image .
 ```
 - Install required dependencies using poetry
 ``` bash
-poetry install && poetry shell
+poetry install l --no-root && poetry shell
 ```
 
 - Run the contaier chain
 ``` bash
-python3 run_chain.py
+python3 run_fcnn.py
 ```
