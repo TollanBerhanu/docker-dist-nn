@@ -24,7 +24,7 @@ def log_msg(message, priority=0):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
             # Using host.docker.internal to reach the host machine on Mac
-            log_sock.connect(("host.docker.internal", 1234))
+            log_sock.connect(("host.docker.internal", 2345))
             log_sock.sendall(timestamped.encode())
     except Exception as e:
         # If logging fails, fallback to writing locally (or silently ignore)
@@ -32,14 +32,6 @@ def log_msg(message, priority=0):
         pass
     # Also log locally for container debugging.
     print(timestamped)
-
-log_msg(f"""Configuration - LISTEN_PORT: {LISTEN_PORT}, \n
-    EXPECTED_INPUT_LENGTH: {EXPECTED_INPUTS},
-    WEIGHTS: {WEIGHTS[:2] + ["..."] + WEIGHTS[-2:]}, 
-    BIAS: {BIAS}, 
-    ACTIVATION: {ACTIVATION}, 
-    NEXT_NODES: {NEXT_NODES}
-    """, 0)
 
 def relu(x):
     return max(0, x)
@@ -66,20 +58,19 @@ collected_inputs = []
 
 def process_and_forward():
     global collected_inputs
-    log_msg(f"\t---> Processing and forwarding with collected inputs: {collected_inputs}", 1)
+    log_msg(f"\t---> {CONTAINER_NAME} processing inputs: [{collected_inputs[:2]} ... {collected_inputs[-2:]}]", 0)
     # Compute weighted sum
     weighted_sum = sum(float(val) * float(w) for val, w in zip(collected_inputs, WEIGHTS)) + BIAS
-    log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 1)
+    log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 0)
     
     output = activate(weighted_sum)
-    log_msg(f"\t---> Activation output: {output}", 1)
+    log_msg(f"\t---> Activation output: {output}", 2)
     log_msg(f"\t---> Processed inputs: {collected_inputs}, Weights: {WEIGHTS}, Bias: {BIAS}, Weighted sum: {weighted_sum}, Output: {output}", 1)
-    
     # Reset inputs for the next inference round
     collected_inputs = []
     # Prepare output output_values
     output_values = json.dumps({"value": output}).encode()
-    log_msg(f"\t---> Prepared output_values to forward: {output_values}", 0)
+    log_msg(f"\t---> Prepared output_values to forward: {output_values}", 2)
     # Forward the result to all next nodes
     for node in NEXT_NODES:
         try:
@@ -92,42 +83,44 @@ def process_and_forward():
 
 def handle_neuron(conn, addr):
     global collected_inputs
-    log_msg(f"{CONTAINER_NAME} handling neuron on {addr}", 0)
+    log_msg(f"{CONTAINER_NAME} handling neuron on {addr}", 1)
     try:
         data = conn.recv(1024).decode()
         msg = json.loads(data)
         value = msg.get("value")
 
-        # # If the input is a list, log only a fraction of it.
-        # if isinstance(value, list):
-        #     if len(value) > 4:
-        #         truncated = value[:2] + ["..."] + value[-2:]
-        #     else:
-        #         truncated = value
-        # else:
-        #     truncated = value
-
-        log_msg(f"\t---> {CONTAINER_NAME} received input: {value[:2] + ["..."] + value[-2:]}", 0)
+        log_msg(f"\t---> {CONTAINER_NAME} received input: {value}", 0)
         with inputs_lock:
             collected_inputs.append(value)
-            log_msg(f"\t---> Collected inputs: {collected_inputs}", 1)
+            log_msg(f"\t---> Collected inputs: {collected_inputs}", 2)
             if len(collected_inputs) == EXPECTED_INPUTS:
                 process_and_forward()
     except Exception as e:
-        log_msg(f"\t---> Error handling neuron: {e}", 0)
+        log_msg(f"\t---> Error in handle_neuron: {e}", 0)
     finally:
         conn.close()
-        log_msg(f"\t---> Closed connection from {addr}", 0)
+        log_msg(f"\t--->  Closed connection from {addr}", 0)
 
 def server():
+    log_msg(f"{CONTAINER_NAME} listening on port {LISTEN_PORT} ...", 0)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", LISTEN_PORT))
         s.listen()
-        log_msg(f"{CONTAINER_NAME} neuron listening on port {LISTEN_PORT}.", 0)
+        # log_msg(f"{CONTAINER_NAME} neuron listening on port {LISTEN_PORT}.", 0)
         while True:
             conn, addr = s.accept()
-            log_msg(f"\t--->  Accepted connection from {addr}", 0)
+            log_msg(f"\t---> Accepted connection from {addr}", 0)
             threading.Thread(target=handle_neuron, args=(conn, addr), daemon=True).start()
 
 if __name__ == "__main__":
+
+    log_msg(f"""Configuration - 
+        LISTEN_PORT: {LISTEN_PORT},
+        EXPECTED_INPUT_LENGTH: {EXPECTED_INPUTS},
+        WEIGHTS: {WEIGHTS[:2] + ["..."] + WEIGHTS[-2:]}, 
+        BIAS: {BIAS}, 
+        ACTIVATION: {ACTIVATION}, 
+        NEXT_NODES: {NEXT_NODES}
+        """, 0)
+
     server()
