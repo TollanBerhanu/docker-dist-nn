@@ -3,8 +3,9 @@ import socket
 import json
 import time
 import threading
+import platform
 
-CONFIG_FILE = "config/config_cali.json"
+CONFIG_FILE = "config/config_sample.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 7100    # Base port for the first hidden layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
@@ -47,9 +48,12 @@ try:
 except Exception:
     network = client.networks.get(network_name)
 
-# For Linux, get the Docker network gateway IP (to reach host callback)
+# For Linux, get the Docker network gateway IP; for macOS use host.docker.internal.
 network_details = network.attrs
-gateway_ip = network_details['IPAM']['Config'][0]['Gateway']
+if platform.system() == "Darwin":
+    gateway_ip = "host.docker.internal"
+else:
+    gateway_ip = network_details['IPAM']['Config'][0]['Gateway']
 print("Gateway IP for callback:", gateway_ip)
 
 containers = {}
@@ -82,6 +86,7 @@ for layer_index in range(1, len(layers)):
         bias = neuron_config["bias"]
         activation = neuron_config["activation"]
         env = {
+            "CONTAINER_NAME": str(container_name),
             "LISTEN_PORT": str(listen_port),
             "EXPECTED_INPUTS": str(expected_inputs),
             "WEIGHTS": json.dumps(weights),
