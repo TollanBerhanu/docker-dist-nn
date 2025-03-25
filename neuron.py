@@ -58,7 +58,7 @@ collected_inputs = []
 
 def process_and_forward():
     global collected_inputs
-    log_msg(f"\t---> {CONTAINER_NAME} processing inputs: [{collected_inputs[:2]} ... {collected_inputs[-2:]}]", 0)
+    log_msg(f"\t---> {CONTAINER_NAME} processing inputs: {collected_inputs[:2] + ['...'] + collected_inputs[-2:]}", 0)
     # Compute weighted sum
     weighted_sum = sum(float(val) * float(w) for val, w in zip(collected_inputs, WEIGHTS)) + BIAS
     log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 0)

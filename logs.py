@@ -21,3 +21,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 with open(LOGFILE, 'a') as f: 
                     f.write(data.decode() + "\n") 
                     print(data.decode())
+
+# To kill the server, run:
+# lsof -i :2345
+# kill -9 <PID>
