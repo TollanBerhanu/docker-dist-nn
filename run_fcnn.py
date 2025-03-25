@@ -4,11 +4,12 @@ import json
 import time
 import threading
 import platform
+from tqdm import tqdm
 
-CONFIG_FILE = "config/config_sample.json"
+CONFIG_FILE = "config/config_mnist.json"
 CALLBACK_PORT = 9000
-BASE_PORT_FIRST_HIDDEN = 7100    # Base port for the first hidden layer
-BASE_PORT_INCREMENT = 100        # Increment per layer
+BASE_PORT_FIRST_HIDDEN = 4100    # Base port for the first hidden layer
+BASE_PORT_INCREMENT = 500        # Increment per layer
 
 # Load configuration
 with open(CONFIG_FILE, "r") as f:
@@ -99,12 +100,12 @@ for layer_index in range(1, len(layers)):
         ports = None
         if layer_index == 1:
             ports = {f"{listen_port}/tcp": listen_port}
-            print(f"Starting hidden neuron container {container_name} on port {listen_port}")
+            print(f"Spawned hidden neuron container '{container_name}' on port {listen_port}")
         else:
             if layer["type"] == "hidden":
-                print(f"Starting hidden neuron container {container_name} on port {listen_port}")
+                print(f"Spawned hidden neuron container '{container_name}' on port {listen_port}")
             else:
-                print(f"Starting output neuron container {container_name} on port {listen_port}")
+                print(f"Spawned output neuron container '{container_name}' on port {listen_port}")
 
         container = client.containers.run(
             "fcnn_image",  # Make sure to build your image with: docker build -t fcnn_image .
@@ -116,21 +117,24 @@ for layer_index in range(1, len(layers)):
         )
         containers[container_name] = container
 
-# Callback server to receive final output
-final_result = None
+# Callback server to receive final outputs from output neurons
+final_results = []  # Changed from final_result to a list
+expected_outputs = layers[-1]["nodes"]  # Number of neurons in the output layer
+
 def callback_server():
-    global final_result
+    global final_results
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
-        conn, addr = s.accept()
-        with conn:
-            data = conn.recv(1024).decode()
-            if data:
-                msg = json.loads(data)
-                final_result = msg.get("value")
-                print("Final result received:", final_result)
+        while len(final_results) < expected_outputs:
+            conn, addr = s.accept()
+            with conn:
+                data = conn.recv(1024).decode()
+                if data:
+                    msg = json.loads(data)
+                    final_results.append(msg.get("value"))
+                    print(f"Received from {addr}: {msg.get('value')}")
 
 callback_thread = threading.Thread(target=callback_server, daemon=True)
 callback_thread.start()
@@ -149,18 +153,19 @@ for mapping in neuron_mappings[1]:
         # Short delay to help preserve order if needed
         time.sleep(0.5)
 
+# Wait until the expected number of outputs have been received or the timeout is reached
 callback_thread.join(timeout=10)
 elapsed_time = time.time() - start_time
 
-if final_result is not None:
-    print("Final output from neural network:", final_result)
+if len(final_results) == expected_outputs:
+    print("Final outputs from neural network:", final_results)
     print("Total processing time: {:.3f} seconds".format(elapsed_time))
 else:
-    print("No result received within the timeout period.")
+    print("Not all outputs received within the timeout period.")
 
 # Cleanup: stop and remove all containers and the network.
-for container in containers.values():
-    print(f"Stopping and removing container {container.name}")
+for container in tqdm(containers.values(), desc="Stopping and removing containers"):
+    # print(f"Stopping and removing container {container.name}")
     container.stop()
     container.remove()
 print("Removing network", network_name)
