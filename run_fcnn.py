@@ -6,7 +6,8 @@ import threading
 import platform
 from tqdm import tqdm
 
-CONFIG_FILE = "config/config_mnist.json"
+CONFIG_FILE = "config/config_sample.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_sample.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 4100    # Base port for the first hidden layer
 BASE_PORT_INCREMENT = 500        # Increment per layer
@@ -14,22 +15,23 @@ BASE_PORT_INCREMENT = 500        # Increment per layer
 # Load configuration
 with open(CONFIG_FILE, "r") as f:
     config = json.load(f)
-
 layers = config["layers"]
-# Input layer
-input_layer = layers[0]
-input_values = input_layer["values"]
-num_input = input_layer["nodes"]
+
+# Load Inputs
+with open(INPUTS_FILE, "r") as f:
+    inputs = json.load(f)["examples"]
+input_values = inputs[0]
+num_input = len(input_values)
 
 # Pre-calculate container mapping for each layer (all layers after input)
 # Mapping: for each layer index i (i>=1), generate a list of dicts with container name and listen port.
 neuron_mappings = {}
-for layer_index in range(1, len(layers)):
+for layer_index in range(len(layers)):
     layer = layers[layer_index]
     num_neurons = layer["nodes"]
     # Use a different port range per layer. For layer 1, start at BASE_PORT_FIRST_HIDDEN;
     # for later layers, add BASE_PORT_INCREMENT per layer.
-    base_port = BASE_PORT_FIRST_HIDDEN + (layer_index - 1) * BASE_PORT_INCREMENT
+    base_port = BASE_PORT_FIRST_HIDDEN + (layer_index * BASE_PORT_INCREMENT)
     mapping = []
     for j in range(num_neurons):
         if layer["type"] == "output":
