@@ -3,129 +3,180 @@ import socket
 import json
 import threading
 import math
-from datetime import datetime  # changed code
+import time
+from datetime import datetime
 
-# Get configuration from environment variables
-CONTAINER_NAME = os.environ.get("CONTAINER_NAME", "container")  # Added container name for logging
-LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8000"))
-EXPECTED_INPUTS = int(os.environ.get("EXPECTED_INPUTS", "1"))
-WEIGHTS = json.loads(os.environ.get("WEIGHTS", "[]"))
-BIAS = float(os.environ.get("BIAS", "0"))
-ACTIVATION = os.environ.get("ACTIVATION", "relu")
-# NEXT_NODES is a JSON string representing a list of dicts, e.g.:
-#   [{"host": "nn_output_0", "port": "8201"}] or for final neuron: [{"host": "<gateway_ip>", "port": "9000"}]
-NEXT_NODES = json.loads(os.environ.get("NEXT_NODES", "[]"))
+class Neuron:
+    def __init__(self):
+        # Configuration from environment variables
+        self.container_name = os.environ.get("CONTAINER_NAME", "container")
+        self.listen_port = int(os.environ.get("LISTEN_PORT", "8000"))
+        self.expected_inputs = int(os.environ.get("EXPECTED_INPUTS", "1"))
+        self.weights = json.loads(os.environ.get("WEIGHTS", "[]"))
+        self.bias = float(os.environ.get("BIAS", "0"))
+        self.activation = os.environ.get("ACTIVATION", "relu")
+        self.next_nodes = json.loads(os.environ.get("NEXT_NODES", "[]"))
+        
+        # State variables
+        self.inputs_lock = threading.Lock()
+        self.collected_inputs = []
+        self.connections = {}  # Store persistent connections to next nodes
+        
+        self.log_msg(f"""Neuron initialized with configuration - 
+            LISTEN_PORT: {self.listen_port},
+            EXPECTED_INPUT_LENGTH: {self.expected_inputs},
+            WEIGHTS: {self.weights[:2] + ["..."] + self.weights[-2:] if len(self.weights) > 4 else self.weights}, 
+            BIAS: {self.bias}, 
+            ACTIVATION: {self.activation}, 
+            NEXT_NODES: {self.next_nodes}
+            """, 0)
+        
+        # Establish connections to downstream neurons
+        self.establish_connections()
 
-# New log_msg helper that sends log messages to the host logging server
-def log_msg(message, priority=0):
-    if priority > 0:
-        return
-    timestamped = f"{datetime.now().isoformat()} | {message}"
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
-            # Using host.docker.internal to reach the host machine on Mac
-            log_sock.connect(("host.docker.internal", 2345))
-            log_sock.sendall(timestamped.encode())
-    except Exception as e:
-        # If logging fails, fallback to writing locally (or silently ignore)
-        print(f"Logging failed: {e}")
-        pass
-    # Also log locally for container debugging.
-    print(timestamped)
+    def establish_connections(self):
+        """Establish persistent connections to all downstream neurons"""
+        max_retries = 30
+        retry_interval = 2  # seconds
+        
+        for node in self.next_nodes:
+            host = node["host"]
+            port = int(node["port"])
+            connected = False
+            retries = 0
+            
+            while not connected and retries < max_retries:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.connect((host, port))
+                    self.connections[(host, port)] = s
+                    self.log_msg(f"Established persistent connection to {host}:{port}", 0)
+                    connected = True
+                except Exception as e:
+                    retries += 1
+                    self.log_msg(f"Connection attempt {retries} to {host}:{port} failed: {e}. Retrying in {retry_interval}s...", 0)
+                    time.sleep(retry_interval)
+            
+            if not connected:
+                self.log_msg(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", 0)
 
-def relu(x):
-    return max(0, x)
-
-def sigmoid(x):
-    try:
-        return 1 / (1 + math.exp(-x))
-    except OverflowError:
-        return 0.0 if x < 0 else 1.0
-
-def activate(x):
-    log_msg(f"Activating with {ACTIVATION} function on value: {x}", 1)
-    if ACTIVATION == "relu":
-        return relu(x)
-    elif ACTIVATION == "sigmoid":
-        return sigmoid(x)
-    else:
-        # Default: linear activation
-        return x
-
-# A lock to protect access to our input collection
-inputs_lock = threading.Lock()
-collected_inputs = []
-
-def process_and_forward():
-    global collected_inputs
-    log_msg(f"\t---> {CONTAINER_NAME} processing inputs: {collected_inputs[:2] + ['...'] + collected_inputs[-2:]}", 0)
-    # Compute weighted sum
-    weighted_sum = sum(float(val) * float(w) for val, w in zip(collected_inputs, WEIGHTS)) + BIAS
-    log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 0)
-    
-    output = activate(weighted_sum)
-    log_msg(f"\t---> Activation output: {output}", 2)
-    log_msg(f"\t---> Processed inputs: {collected_inputs}, Weights: {WEIGHTS}, Bias: {BIAS}, Weighted sum: {weighted_sum}, Output: {output}", 1)
-    # Reset inputs for the next inference round
-    collected_inputs = []
-    # Prepare output output_values
-    output_values = json.dumps({"value": output}).encode()
-    log_msg(f"\t---> Prepared output_values to forward: {output_values}", 2)
-    # Forward the result to all next nodes
-    for node in NEXT_NODES:
+    def log_msg(self, message, priority=0):
+        if priority > 0:
+            return
+        timestamped = f"{datetime.now().isoformat()} | {message}"
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((node["host"], int(node["port"])))
-                s.sendall(output_values)
-                log_msg(f"\t---> Forwarded output to {node['host']}:{node['port']} with value: {output_values}", 0)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
+                # Using host.docker.internal to reach the host machine
+                log_sock.connect(("host.docker.internal", 2345))
+                log_sock.sendall(timestamped.encode())
         except Exception as e:
-            log_msg(f"\t---> Error forwarding to {node}: {e}", 0)
+            # If logging fails, fallback to writing locally
+            print(f"Logging failed: {e}")
+        # Also log locally for container debugging
+        print(timestamped)
 
-def handle_neuron(conn, addr):
-    global collected_inputs
-    log_msg(f"{CONTAINER_NAME} handling neuron on {addr}", 1)
-    try:
-        while True:
-            data = conn.recv(1024).decode()
-            if not data:
-                break
+    def relu(self, x):
+        return max(0, x)
+
+    def sigmoid(self, x):
+        try:
+            return 1 / (1 + math.exp(-x))
+        except OverflowError:
+            return 0.0 if x < 0 else 1.0
+
+    def activate(self, x):
+        self.log_msg(f"Activating with {self.activation} function on value: {x}", 1)
+        if self.activation == "relu":
+            return self.relu(x)
+        elif self.activation == "sigmoid":
+            return self.sigmoid(x)
+        else:
+            # Default: linear activation
+            return x
+
+    def process_and_forward(self):
+        self.log_msg(f"\t---> {self.container_name} processing {len(self.collected_inputs)} inputs", 0)
+        
+        # Compute weighted sum
+        weighted_sum = sum(float(val) * float(w) for val, w in zip(self.collected_inputs, self.weights)) + self.bias
+        self.log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 0)
+        
+        output = self.activate(weighted_sum)
+        self.log_msg(f"\t---> Activation output: {output}", 1)
+        
+        # Reset inputs for the next inference round
+        self.collected_inputs = []
+        
+        # Prepare output value
+        output_values = json.dumps({"value": output}).encode()
+        
+        # Forward the result to all next nodes using persistent connections
+        for node in self.next_nodes:
+            host = node["host"]
+            port = int(node["port"])
             try:
-                msg = json.loads(data)
-                value = msg.get("value")
-                log_msg(f"\t---> {CONTAINER_NAME} received input: {value}", 0)
-                with inputs_lock:
-                    collected_inputs.append(value)
-                    log_msg(f"\t---> Collected inputs: {collected_inputs}", 2)
-                    if len(collected_inputs) == EXPECTED_INPUTS:
-                        process_and_forward()
+                conn = self.connections.get((host, port))
+                if conn:
+                    conn.sendall(output_values)
+                    self.log_msg(f"\t---> Forwarded output to {host}:{port} with value: {output}", 0)
+                else:
+                    # If connection doesn't exist or was closed, try to establish it
+                    self.log_msg(f"\t---> Connection to {host}:{port} not found, attempting to reconnect", 0)
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.connect((host, port))
+                        self.connections[(host, port)] = s
+                        s.sendall(output_values)
+                        self.log_msg(f"\t---> Reconnected and forwarded output to {host}:{port}", 0)
+                    except Exception as e:
+                        self.log_msg(f"\t---> Error reconnecting to {host}:{port}: {e}", 0)
             except Exception as e:
-                log_msg(f"\t---> Error processing data: {e}", 0)
-    except Exception as e:
-        log_msg(f"\t---> Error in handle_neuron: {e}", 0)
-    # finally:
-    #     conn.close()
-    #     log_msg(f"\t---> Closed connection from {addr}", 0)
+                self.log_msg(f"\t---> Error forwarding to {host}:{port}: {e}", 0)
 
-def server():
-    log_msg(f"{CONTAINER_NAME} listening on port {LISTEN_PORT} ...", 0)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", LISTEN_PORT))
-        s.listen()
-        # log_msg(f"{CONTAINER_NAME} neuron listening on port {LISTEN_PORT}.", 0)
-        while True:
-            conn, addr = s.accept()
-            log_msg(f"\t---> Accepted connection from {addr}", 0)
-            threading.Thread(target=handle_neuron, args=(conn, addr), daemon=True).start()
+    def handle_client(self, conn, addr):
+        self.log_msg(f"{self.container_name} handling client on {addr}", 1)
+        try:
+            while True:
+                data = conn.recv(1024).decode()
+                if not data:
+                    break
+                try:
+                    msg = json.loads(data)
+                    value = msg.get("value")
+                    self.log_msg(f"\t---> {self.container_name} received input: {value}", 0)
+                    with self.inputs_lock:
+                        self.collected_inputs.append(value)
+                        if len(self.collected_inputs) == self.expected_inputs:
+                            self.process_and_forward()
+                except Exception as e:
+                    self.log_msg(f"\t---> Error processing data: {e}", 0)
+        except Exception as e:
+            self.log_msg(f"\t---> Error in handle_client: {e}", 0)
+        finally:
+            conn.close()
+
+    def start_server(self):
+        self.log_msg(f"{self.container_name} listening on port {self.listen_port} ...", 0)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", self.listen_port))
+            s.listen()
+            while True:
+                conn, addr = s.accept()
+                self.log_msg(f"\t---> Accepted connection from {addr}", 0)
+                threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
+
+    def cleanup(self):
+        """Close all persistent connections"""
+        for (host, port), conn in self.connections.items():
+            try:
+                conn.close()
+                self.log_msg(f"Closed connection to {host}:{port}", 0)
+            except Exception as e:
+                self.log_msg(f"Error closing connection to {host}:{port}: {e}", 0)
 
 if __name__ == "__main__":
-
-    log_msg(f"""Configuration - 
-        LISTEN_PORT: {LISTEN_PORT},
-        EXPECTED_INPUT_LENGTH: {EXPECTED_INPUTS},
-        WEIGHTS: {WEIGHTS[:2] + ["..."] + WEIGHTS[-2:]}, 
-        BIAS: {BIAS}, 
-        ACTIVATION: {ACTIVATION}, 
-        NEXT_NODES: {NEXT_NODES}
-        """, 0)
-
-    server()
+    neuron = Neuron()
+    try:
+        neuron.start_server()
+    except KeyboardInterrupt:
+        neuron.cleanup()
