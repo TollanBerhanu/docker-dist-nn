@@ -12,6 +12,8 @@ CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 4100    # Base port for the first hidden layer
 BASE_PORT_INCREMENT = 500        # Increment per layer
 
+start_time = time.time()
+
 # Load configuration
 with open(CONFIG_FILE, "r") as f:
     config = json.load(f)
@@ -120,7 +122,7 @@ for layer_index in range(1, len(layers)):
         containers[container_name] = container
 
 # Callback server to receive final outputs from output neurons
-final_results = []  # Changed from final_result to a list
+final_results = []  # Changed from a single value to a list for multiple rounds
 expected_outputs = layers[-1]["nodes"]  # Number of neurons in the output layer
 
 def callback_server():
@@ -129,46 +131,30 @@ def callback_server():
         s.bind(("", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
-        while len(final_results) < expected_outputs:
+        while True:  # Listen continuously for inference results
             conn, addr = s.accept()
             with conn:
                 data = conn.recv(1024).decode()
                 if data:
-                    msg = json.loads(data)
-                    final_results.append(msg.get("value"))
-                    print(f"Received from {addr}: {msg.get('value')}")
+                    try:
+                        msg = json.loads(data)
+                        final_results.append(msg.get("value"))
+                        print(f"Received from {addr}: {msg.get('value')}")
+                        if len(final_results) == expected_outputs:  # One inference round complete
+                            print("Inference round complete with results:", final_results)
+                            final_results = []  # Reset for the next inference
+                    except Exception as e:
+                        print(f"Error decoding message from {addr}: {e}")
 
 callback_thread = threading.Thread(target=callback_server, daemon=True)
 callback_thread.start()
 
 # Allow time for containers to start up
-time.sleep(10)
-start_time = time.time()
+# time.sleep(2)
 
-# For the first hidden layer, send each input value to every neuron
-for mapping in neuron_mappings[1]:
-    for idx, val in enumerate(input_values):
-        msg = json.dumps({"value": val, "index": idx}).encode()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect(("localhost", mapping["port"]))
-            s.sendall(msg)
-        # Short delay to help preserve order if needed
-        time.sleep(0.5)
+elapsed_time = time.time() - start_time # Error: start_time is not defined
+print(f"Containers started in {elapsed_time:.3f} seconds.")
 
-# Wait until the expected number of outputs have been received or the timeout is reached
-callback_thread.join(timeout=10)
-elapsed_time = time.time() - start_time
-
-if len(final_results) == expected_outputs:
-    print("Final outputs from neural network:", final_results)
-    print("Total processing time: {:.3f} seconds".format(elapsed_time))
-else:
-    print("Not all outputs received within the timeout period.")
-
-# Cleanup: stop and remove all containers and the network.
-for container in tqdm(containers.values(), desc="Stopping and removing containers"):
-    # print(f"Stopping and removing container {container.name}")
-    container.stop()
-    container.remove()
-print("Removing network", network_name)
-network.remove()
+print("Neural network is running continuously. Awaiting inferences...")
+while True:
+    time.sleep(1)

@@ -85,21 +85,26 @@ def handle_neuron(conn, addr):
     global collected_inputs
     log_msg(f"{CONTAINER_NAME} handling neuron on {addr}", 1)
     try:
-        data = conn.recv(1024).decode()
-        msg = json.loads(data)
-        value = msg.get("value")
-
-        log_msg(f"\t---> {CONTAINER_NAME} received input: {value}", 0)
-        with inputs_lock:
-            collected_inputs.append(value)
-            log_msg(f"\t---> Collected inputs: {collected_inputs}", 2)
-            if len(collected_inputs) == EXPECTED_INPUTS:
-                process_and_forward()
+        while True:
+            data = conn.recv(1024).decode()
+            if not data:
+                break
+            try:
+                msg = json.loads(data)
+                value = msg.get("value")
+                log_msg(f"\t---> {CONTAINER_NAME} received input: {value}", 0)
+                with inputs_lock:
+                    collected_inputs.append(value)
+                    log_msg(f"\t---> Collected inputs: {collected_inputs}", 2)
+                    if len(collected_inputs) == EXPECTED_INPUTS:
+                        process_and_forward()
+            except Exception as e:
+                log_msg(f"\t---> Error processing data: {e}", 0)
     except Exception as e:
         log_msg(f"\t---> Error in handle_neuron: {e}", 0)
-    finally:
-        conn.close()
-        log_msg(f"\t--->  Closed connection from {addr}", 0)
+    # finally:
+    #     conn.close()
+    #     log_msg(f"\t---> Closed connection from {addr}", 0)
 
 def server():
     log_msg(f"{CONTAINER_NAME} listening on port {LISTEN_PORT} ...", 0)
