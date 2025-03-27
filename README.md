@@ -7,9 +7,14 @@ Run this commands in the root directory to get started:
 ``` bash
 docker build -t fcnn_image .
 ```
-- Install required dependencies using poetry
+
+- Install required dependencies using poetry (Linux)
 ``` bash
-poetry install l --no-root && poetry shell
+poetry install && poetry shell
+```
+- Install required dependencies using poetry (MacOS)
+``` bash
+poetry install --no-root && eval $(poetry env activate)
 ```
 
 - Run the contaier chain
