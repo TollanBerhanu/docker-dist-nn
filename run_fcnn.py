@@ -7,8 +7,8 @@ import platform
 import uuid
 from tqdm import tqdm
 
-CONFIG_FILE = "config/config_cali.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_cali.json"
+CONFIG_FILE = "config/config_sample.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_sample.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 1100
 BASE_PORT_INCREMENT = 800
@@ -28,12 +28,12 @@ def main():
     num_input = len(input_values)
     
     # Pre-calculate container mapping for each layer (all layers after input)
-    # Mapping: for each layer index i (i>=1), generate a list of dicts with container name and listen port.
+    # Mapping: for each layer index i (i>=0), generate a list of dicts with container name and listen port.
     neuron_mappings = {}
     for layer_index in range(len(layers)):
         layer = layers[layer_index]
         num_neurons = layer["nodes"]
-        # Use a different port range per layer. For layer 1, start at BASE_PORT_FIRST_HIDDEN;
+        # Use a different port range per layer. For layer 0, start at BASE_PORT_FIRST_HIDDEN;
         # for later layers, add BASE_PORT_INCREMENT per layer.
         base_port = BASE_PORT_FIRST_HIDDEN + (layer_index * BASE_PORT_INCREMENT)
         mapping = []
@@ -41,7 +41,7 @@ def main():
             if layer["type"] == "output":
                 container_name = f"nn_output_{j}"
             else:
-                container_name = f"nn_hidden_{layer_index-1}_{j}"
+                container_name = f"nn_hidden_{layer_index}_{j}"  # Remove the -1
             port = base_port + j + 1
             mapping.append({"name": container_name, "port": port})
         neuron_mappings[layer_index] = mapping
@@ -74,7 +74,7 @@ def main():
     
     # Remove existing containers
     print("Checking for existing containers...")
-    for layer_index in range(1, len(layers)):
+    for layer_index in range(len(layers)):  # Changed to include all layers
         for j in range(layers[layer_index]["nodes"]):
             mapping = neuron_mappings[layer_index][j]
             container_name = mapping["name"]
@@ -90,12 +90,12 @@ def main():
     
     # Spawn containers for each neuron
     print("Starting neural network containers...")
-    for layer_index in range(1, len(layers)):
+    for layer_index in range(len(layers)):  # Changed to include all layers
         layer = layers[layer_index]
         neurons = layer.get("neurons", [])
         num_neurons = layer["nodes"]
         # Expected inputs equals the number of neurons (or input nodes) in the previous layer
-        if layer_index == 1:
+        if layer_index == 0:  # First hidden layer
             expected_inputs = num_input
         else:
             expected_inputs = layers[layer_index - 1]["nodes"]
@@ -129,7 +129,7 @@ def main():
     
             # For the first hidden layer, publish the container port so that the controller can send inputs
             ports = None
-            if layer_index == 1:
+            if layer_index == 0:  # Changed from layer_index == 1
                 ports = {f"{listen_port}/tcp": listen_port}
                 
             if layer["type"] == "hidden":
@@ -176,7 +176,6 @@ def main():
                             print(f"Received from {addr}: {result_value}")
 
                             final_results.append(result_value)
-                            print(f"Received from {addr}: {result_value}")
                             if len(final_results) == expected_outputs:  # One inference round complete
                                 print("Inference round complete with results:", final_results)
                                 final_results = []  # Reset for the next inference

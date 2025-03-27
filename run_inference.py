@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 def run_inference(input_index=1):
     # Load Inputs
-    with open("config/example_inputs/example_inputs_cali.json", "r") as f:
+    with open("config/example_inputs/example_inputs_sample.json", "r") as f:
         inputs = json.load(f)["examples"]
     
     if input_index >= len(inputs):
@@ -18,15 +18,15 @@ def run_inference(input_index=1):
     print(f"Running inference with input values: {input_values}")
 
     # Load configuration to compute neuron mappings
-    with open("config/config_cali.json", "r") as f:
+    with open("config/config_sample.json", "r") as f:
         config = json.load(f)
     layers = config["layers"]
 
     BASE_PORT_FIRST_HIDDEN = 1100
     BASE_PORT_INCREMENT = 800
     
-    # The first inference is sent to the first hidden layer (layer index 1)
-    layer_index = 1
+    # The first inference is sent to the first hidden layer (layer index 0)
+    layer_index = 0
     layer = layers[layer_index]
     base_port = BASE_PORT_FIRST_HIDDEN + (layer_index * BASE_PORT_INCREMENT)
     first_hidden_mapping = []
