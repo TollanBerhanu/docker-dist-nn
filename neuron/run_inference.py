@@ -12,7 +12,7 @@ def wait_for_results():
         s.listen()
         conn, addr = s.accept()
         with conn:
-            data = conn.recv(1024).decode()
+            data = conn.recv(10240).decode()
             if data:
                 msg = json.loads(data)
                 print(f"Received final results: {msg.get('results')}")

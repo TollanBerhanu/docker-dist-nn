@@ -2,7 +2,7 @@ import socket
 
 HOST = '' # Listen on all interfaces 
 PORT = 2345 
-LOGFILE = 'neuron_logs.txt'
+LOGFILE = 'logs/neuron_logs.txt'
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s: 
     s.bind((HOST, PORT)) 

@@ -139,7 +139,7 @@ class Neuron:
         self.log_msg(f"{self.container_name} handling client on {addr}", 1)
         try:
             while True:
-                data = conn.recv(1024).decode()
+                data = conn.recv(10240).decode()
                 if not data:
                     break
                 try:

@@ -7,8 +7,8 @@ import platform
 import uuid
 from tqdm import tqdm
 
-CONFIG_FILE = "config/config_sample.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_sample.json"
+CONFIG_FILE = "config/config_cali.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_cali.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 1100
 BASE_PORT_INCREMENT = 800
@@ -161,7 +161,7 @@ def main():
                 while len(round_results) < expected_outputs:
                     conn, addr = s.accept()
                     with conn:
-                        data = conn.recv(1024).decode()
+                        data = conn.recv(10240).decode()
                         if data:
                             try:
                                 msg = json.loads(data)
@@ -188,7 +188,7 @@ def main():
     
     # Start progress monitor for neuron connection establishment
     total_neurons = sum(layer["nodes"] for layer in layers)
-    LOGFILE = 'neuron_logs.txt'
+    LOGFILE = 'logs/neuron_logs.txt'
     def progress_monitor():
         import time
         last_count = -1
