@@ -1,0 +1,69 @@
+import socket
+import json
+import time
+import sys
+import threading
+from tqdm import tqdm
+from run_fcnn_layer import INPUTS_FILE, CONFIG_FILE
+
+# Constants specific to layer-based FCNN inference
+FIRST_LAYER_PORT = 5101    # Must match the published port for layer_0 in run_fcnn_layer.py
+CALLBACK_PORT = 9500
+
+
+def load_example_inputs():
+    """Helper to load example_inputs from INPUTS_FILE."""
+    with open(INPUTS_FILE, "r") as f:
+        return json.load(f)["examples"]
+
+def wait_for_results():
+    # Callback server to capture the final output matrix.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", CALLBACK_PORT))
+        s.listen()
+        print(f"Callback server listening on port {CALLBACK_PORT}...")
+        conn, addr = s.accept()
+        with conn:
+            data = conn.recv(10240).decode()
+            if data:
+                try:
+                    msg = json.loads(data)
+                    print(f"Received final output matrix: {msg.get('matrix')}")
+                except Exception as e:
+                    print(f"Error decoding callback message: {e}")
+
+def run_inference(input_index=0):
+    example_inputs = load_example_inputs()  # load once
+    if input_index >= len(example_inputs):
+        print(f"Error: Input index {input_index} out of range.")
+        return
+    print(f"Running layer inference with input matrix: {example_inputs}")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(("127.0.0.1", FIRST_LAYER_PORT))
+            msg = json.dumps({"matrix": example_inputs}).encode()
+            s.sendall(msg)
+            print(f"Sent input matrix to layer_0 on port {FIRST_LAYER_PORT}")
+    except Exception as e:
+        print(f"Error sending input to first layer: {e}")
+        return
+
+if __name__ == "__main__":
+    input_index = 0
+    if len(sys.argv) > 1:
+        try:
+            input_index = int(sys.argv[1])
+        except ValueError:
+            print(f"Invalid input index: {sys.argv[1]}. Using default index 0.")
+    
+    try:
+        run_inference(input_index)
+
+        start_time = time.time()
+        print("Waiting for results...")
+        wait_for_results()
+        elapsed_time = time.time() - start_time
+        print(f"Time for inference: {elapsed_time:.4f} seconds")
+    except Exception as e:
+        print(f"Error running inference: {e}")
