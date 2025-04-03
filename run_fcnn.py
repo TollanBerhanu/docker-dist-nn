@@ -132,10 +132,7 @@ def main():
             if layer_index == 0:  # Changed from layer_index == 1
                 ports = {f"{listen_port}/tcp": listen_port}
                 
-            if layer["type"] == "hidden":
-                print(f"Spawned hidden neuron container '{container_name}' on port {listen_port}")
-            else:
-                print(f"Spawned output neuron container '{container_name}' on port {listen_port}")
+            print(f"Spawning container '{container_name}' on port {listen_port}")
     
             container = client.containers.run(
                 "fcnn_image",
@@ -147,46 +144,72 @@ def main():
             )
             containers[container_name] = container
     
-    # Allow time for containers to start
-    startup_delay = 5
-    print(f"Waiting {startup_delay} seconds for all containers to initialize...")
-    time.sleep(startup_delay)
-    
-    final_results = []
+    # Wait for containers to start
+    print(f"Waiting for all containers to initialize...")
+
     expected_outputs = layers[-1]["nodes"]  # Number of neurons in the output layer
     
     # Callback server to receive final outputs from output neurons
     def callback_server():
-        global final_results
-        final_results = []  # Ensure it is initialized as a global variable
-        
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", CALLBACK_PORT))
             s.listen()
             print(f"Callback server listening on port {CALLBACK_PORT}...")
             
             while True:
-                conn, addr = s.accept()
-                with conn:
-                    data = conn.recv(1024).decode()
-                    if data:
-                        try:
-                            msg = json.loads(data)
-                            result_value = msg.get("value") 
-                            print(f"Received from {addr}: {result_value}")
-
-                            final_results.append(result_value)
-                            if len(final_results) == expected_outputs:  # One inference round complete
-                                print("Inference round complete with results:", final_results)
-                                final_results = []  # Reset for the next inference
-                        except Exception as e:
-                            print(f"Error decoding message from {addr}: {e}")
+                round_results = []  # Initialize results for current inference round
+                while len(round_results) < expected_outputs:
+                    conn, addr = s.accept()
+                    with conn:
+                        data = conn.recv(1024).decode()
+                        if data:
+                            try:
+                                msg = json.loads(data)
+                                result_value = msg.get("value")
+                                print(f"Received from {addr}: {result_value}")
+                                round_results.append(result_value)
+                            except Exception as e:
+                                print(f"Error decoding message from {addr}: {e}")
+                print("Inference round complete with results:", round_results)
+                # Forward results to run_inference
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as relay_sock:
+                        relay_sock.connect(("127.0.0.1", 9500))
+                        relay_msg = json.dumps({"results": round_results}).encode()
+                        relay_sock.sendall(relay_msg)
+                except Exception as e:
+                    print(f"Error forwarding results to inference script: {e}")
 
     callback_thread = threading.Thread(target=callback_server, daemon=True)
     callback_thread.start()
     
     elapsed_time = time.time() - start_time
     print(f"Neural network started in {elapsed_time:.3f} seconds.")
+    
+    # Start progress monitor for neuron connection establishment
+    total_neurons = sum(layer["nodes"] for layer in layers)
+    LOGFILE = 'neuron_logs.txt'
+    def progress_monitor():
+        import time
+        last_count = -1
+        while True:
+            try:
+                with open(LOGFILE, 'r') as f:
+                    lines = f.readlines()
+                count = sum(1 for line in lines if "Connections established" in line)
+                if count != last_count:
+                    print(f"Progress: {count}/{total_neurons} neurons have established connections.")
+                    last_count = count
+                if count >= total_neurons:
+                    break
+            except Exception as e:
+                print("Progress monitor error:", e)
+            time.sleep(2)
+        print("All neurons connections established.")
+    
+    monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
+    monitor_thread.start()
+    
     print("Network is ready for inference. Run 'python run_inference.py' to send inputs.")
     
     try:
