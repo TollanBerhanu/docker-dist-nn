@@ -36,7 +36,7 @@ class Neuron:
 
     def establish_connections(self):
         """Establish persistent connections to all downstream neurons"""
-        max_retries = 30
+        max_retries = 50
         retry_interval = 2  # seconds
         
         for node in self.next_nodes:
@@ -48,6 +48,7 @@ class Neuron:
             while not connected and retries < max_retries:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    # s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) # Enable keep-alive
                     s.connect((host, port))
                     self.connections[(host, port)] = s
                     self.log_msg(f"Established persistent connection to {host}:{port}", 0)
@@ -59,11 +60,12 @@ class Neuron:
             
             if not connected:
                 self.log_msg(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", 0)
+        self.log_msg(f"Connections established", 0)
 
     def log_msg(self, message, priority=0):
         if priority > 0:
             return
-        timestamped = f"{datetime.now().isoformat()} | {message}"
+        timestamped = f"{datetime.now().isoformat()} | ({self.container_name}) {message}"
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
                 # Using host.docker.internal to reach the host machine
@@ -95,11 +97,11 @@ class Neuron:
             return x
 
     def process_and_forward(self):
-        self.log_msg(f"\t---> {self.container_name} processing {len(self.collected_inputs)} inputs", 0)
+        self.log_msg(f"\t---> Processing {len(self.collected_inputs)} inputs", 0)
         
         # Compute weighted sum
         weighted_sum = sum(float(val) * float(w) for val, w in zip(self.collected_inputs, self.weights)) + self.bias
-        self.log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 0)
+        self.log_msg(f"\t---> Computed weighted sum: {weighted_sum}", 1)
         
         output = self.activate(weighted_sum)
         self.log_msg(f"\t---> Activation output: {output}", 1)
@@ -133,7 +135,7 @@ class Neuron:
             except Exception as e:
                 self.log_msg(f"\t---> Error forwarding to {host}:{port}: {e}", 0)
 
-    def handle_client(self, conn, addr):
+    def handle_neuron(self, conn, addr):
         self.log_msg(f"{self.container_name} handling client on {addr}", 1)
         try:
             while True:
@@ -143,27 +145,37 @@ class Neuron:
                 try:
                     msg = json.loads(data)
                     value = msg.get("value")
-                    self.log_msg(f"\t---> {self.container_name} received input: {value}", 0)
+
+                    # For the input layer, we expect a list of inputs
                     with self.inputs_lock:
-                        self.collected_inputs.append(value)
-                        if len(self.collected_inputs) == self.expected_inputs:
+                        if isinstance(value, list):
+                            self.log_msg(f"\t---> Received input: [{value[0]}, ... {value[-1]}]", 0)
+                            self.collected_inputs = value
+                        else: # For hidden layers, we expect a single input value
+                            self.log_msg(f"\t---> Received input: {value}", 0)
+                            self.collected_inputs.append(value)
+                    if len(self.collected_inputs) == self.expected_inputs:
+                        try:
                             self.process_and_forward()
+                        except Exception as e:
+                            self.log_msg(f"\t---> Error processing and forwarding data: {e}", 0)
                 except Exception as e:
-                    self.log_msg(f"\t---> Error processing data: {e}", 0)
+                    self.log_msg(f"\t---> Error loading data: {e}", 0)
+                        
         except Exception as e:
-            self.log_msg(f"\t---> Error in handle_client: {e}", 0)
+            self.log_msg(f"\t---> Error handleing neuron: {e}", 0)
         finally:
             conn.close()
 
     def start_server(self):
-        self.log_msg(f"{self.container_name} listening on port {self.listen_port} ...", 0)
+        self.log_msg(f"Listening on port {self.listen_port} ...", 0)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", self.listen_port))
             s.listen()
             while True:
                 conn, addr = s.accept()
                 self.log_msg(f"\t---> Accepted connection from {addr}", 0)
-                threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
+                threading.Thread(target=self.handle_neuron, args=(conn, addr), daemon=True).start()
 
     def cleanup(self):
         """Close all persistent connections"""
@@ -175,6 +187,7 @@ class Neuron:
                 self.log_msg(f"Error closing connection to {host}:{port}: {e}", 0)
 
 if __name__ == "__main__":
+    print("Starting Neuron...")
     neuron = Neuron()
     try:
         neuron.start_server()
