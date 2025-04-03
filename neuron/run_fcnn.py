@@ -190,7 +190,7 @@ def main():
     total_neurons = sum(layer["nodes"] for layer in layers)
     LOGFILE = 'logs/neuron_logs.txt'
     def progress_monitor():
-        import time
+        start_time = time.time()
         last_count = -1
         while True:
             try:
@@ -205,7 +205,8 @@ def main():
             except Exception as e:
                 print("Progress monitor error:", e)
             time.sleep(2)
-        print("All neurons connections established.")
+        elapsed_time = time.time() - start_time
+        print(f"All neurons' connections established in {elapsed_time:.3f} seconds.")
     
     monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
     monitor_thread.start()
