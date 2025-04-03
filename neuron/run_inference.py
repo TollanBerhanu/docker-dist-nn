@@ -77,7 +77,7 @@ def run_inference(input_index=1):
 
 if __name__ == "__main__":
     # Allow specifying which input example to use (default is 1)
-    input_index = 1
+    input_index = 0
     if len(sys.argv) > 1:
         try:
             input_index = int(sys.argv[1])
