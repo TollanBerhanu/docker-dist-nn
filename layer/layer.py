@@ -21,15 +21,22 @@ class Layer:
         self.container_name = os.environ.get("CONTAINER_NAME", "layer")
         self.listen_port = int(os.environ.get("LISTEN_PORT", "8000"))
         self.expected_input_dim = int(os.environ.get("EXPECTED_INPUT_DIM", "0"))
-        # if "NEURONS_FILE" in os.environ:
-        with open(os.environ["NEURONS_FILE"], "r") as f:
-            self.neurons = json.load(f)
-        # else:
-        #     self.neurons = json.loads(os.environ.get("NEURONS", "[]"))
+        if "NEURONS_CONFIG" in os.environ:
+            self.neurons_config = json.loads(os.environ["NEURONS_CONFIG"])
+            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]))]
+            log_to_host(f"Container with multiple layers: {len(self.layers)} layers", self.container_name)
+        elif "NEURONS_FILE_CONFIG" in os.environ:
+            with open(os.environ["NEURONS_FILE_CONFIG"], "r") as f:
+                self.neurons_config = json.load(f)
+            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]))]
+            log_to_host(f"Container with multiple layers (via file): {len(self.layers)} layers", self.container_name)
+        else:
+            with open(os.environ["NEURONS_FILE"], "r") as f:
+                self.layers = [json.load(f)]  # single layer wrapped in a list
         self.next_nodes = json.loads(os.environ.get("NEXT_NODES", "[]"))
         self.connections = {}
         self.establish_connections()
-        log_to_host(f"Layer initialized with {len(self.neurons)} neurons expecting input dimension {self.expected_input_dim}", self.container_name)
+        log_to_host(f"Layer initialized with expected input dim {self.expected_input_dim}", self.container_name)
     
     def log_msg(self, message, priority=0):
         if priority > 0:
@@ -60,39 +67,38 @@ class Layer:
                 self.connections[(host, port)] = conn
         log_to_host("Connections established", self.container_name)
 
-    def relu(self, x):
-        return max(0, x)
-
-    def sigmoid(self, x):
-        try:
-            return 1 / (1 + math.exp(-x))
-        except OverflowError:
-            return 0.0 if x < 0 else 1.0
-
-    def activate(self, x, func):
+    def activate(self, values, func):
         if func == "relu":
-            return self.relu(x)
+            return [max(0, v) for v in values]
         elif func == "sigmoid":
-            return self.sigmoid(x)
-        else:
-            return x  # linear
+            return [1/(1+math.exp(-v)) for v in values]
+        elif func == "softmax":
+            m = max(values)
+            exps = [math.exp(v - m) for v in values]
+            s = sum(exps)
+            return [e/s for e in exps]
+        else:  # linear
+            return values
+
 
     def process_matrix(self, input_matrix):
-        output_matrix = []
-        for row in input_matrix:
-            if len(row) != self.expected_input_dim:
-                self.log_msg("Input dimension mismatch", 0)
-                continue
-            outputs = []
-            for neuron in self.neurons:
-                weights = neuron.get("weights", [])
-                bias = neuron.get("bias", 0)
-                activation = neuron.get("activation", "linear")
-                dot = sum(float(val) * float(w) for val, w in zip(row, weights)) + bias
-                outputs.append(self.activate(dot, activation))
-            output_matrix.append(outputs)
-        self.log_msg(f"Processed matrix of dimension: [{len(output_matrix)}, {len(output_matrix[0])}]", 0)
-        return output_matrix
+        current_matrix = input_matrix
+        expected_dim = self.expected_input_dim   # use local variable instead of self.expected_input_dim
+        layer_index = 1
+        for layer in self.layers:
+            output_matrix = []
+            for row in current_matrix:
+                if len(row) != expected_dim:
+                    raise ValueError(f"Layer {layer_index}: expected input dim {expected_dim}, got {len(row)}")
+                raw = [sum(val * w for val, w in zip(row, neuron["weights"])) + neuron["bias"] for neuron in layer]
+                activated = self.activate(raw, layer[0].get("activation", "linear"))
+                output_matrix.append(activated)
+            if output_matrix:
+                expected_dim = len(output_matrix[0])
+            current_matrix = output_matrix
+            layer_index += 1
+        self.log_msg(f"Processed matrix through {layer_index-1} layers. Final output dimension: [{len(current_matrix)}, {len(current_matrix[0]) if current_matrix else 0}]", 0)
+        return current_matrix
 
     def forward_result(self, output_matrix):
         msg = json.dumps({"matrix": output_matrix}).encode()
