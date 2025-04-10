@@ -16,8 +16,11 @@ def load_example_inputs():
         return json.load(f)["examples"]
 
 def wait_for_results():
+    start_time = time.time()
+    print("Waiting for results...")
     # Callback server to capture the final output matrix.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
@@ -27,22 +30,32 @@ def wait_for_results():
             if data:
                 try:
                     msg = json.loads(data)
-                    print(f"Received final output matrix: {msg.get('matrix')}")
+                    print(f"Received final output matrix: {msg.get('results')}")
+                    predicted_matrix = msg.get("results", {}).get("matrix")[0]
+                    max_value = max(predicted_matrix)
+                    max_index = predicted_matrix.index(max_value)
+                    print(f'Predicted Probability: {max_value}, Number: {max_index}')
                 except Exception as e:
                     print(f"Error decoding callback message: {e}")
+    
+    elapsed_time = time.time() - start_time
+    print(f"Time for inference: {elapsed_time:.4f} seconds")
 
 def run_inference(input_index=0):
     example_inputs = load_example_inputs()  # load once
     if input_index >= len(example_inputs):
         print(f"Error: Input index {input_index} out of range.")
         return
-    print(f"Running layer inference with input matrix: {example_inputs}")
+    print(f"Running layer inference with input no. {input_index+1}")
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(5)
             s.connect(("127.0.0.1", FIRST_LAYER_PORT))
-            msg = json.dumps({"matrix": example_inputs}).encode()
-            s.sendall(msg)
+
+            example = example_inputs[input_index]
+            s.sendall(json.dumps({"matrix": [example]}).encode())
+            # msg = json.dumps({"matrix": example_inputs}).encode()
+            # s.sendall(msg)
             print(f"Sent input matrix to layer_0 on port {FIRST_LAYER_PORT}")
     except Exception as e:
         print(f"Error sending input to first layer: {e}")
@@ -57,12 +70,19 @@ if __name__ == "__main__":
             print(f"Invalid input index: {sys.argv[1]}. Using default index 0.")
     
     try:
-        run_inference(input_index)
+        # start listener thread first
+        listener = threading.Thread(target=wait_for_results, daemon=True)
+        listener.start()
 
-        start_time = time.time()
-        print("Waiting for results...")
-        wait_for_results()
-        elapsed_time = time.time() - start_time
-        print(f"Time for inference: {elapsed_time:.4f} seconds")
+        run_inference(input_index)
+        listener.join()
+
+        # run_inference(input_index)
+
+        # start_time = time.time()
+        # print("Waiting for results...")
+        # wait_for_results()
+        # elapsed_time = time.time() - start_time
+        # print(f"Time for inference: {elapsed_time:.4f} seconds")
     except Exception as e:
         print(f"Error running inference: {e}")
