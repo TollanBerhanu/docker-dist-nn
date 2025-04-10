@@ -5,11 +5,20 @@ import time
 import threading
 import platform
 
-CONFIG_FILE = "config/config_cali.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_cali.json"
+CONFIG_FILE = "config/config_mnist.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_mnist.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
+
+def forward_results(msg):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as relay_sock:
+            relay_sock.connect(("127.0.0.1", 9500))
+            relay_msg = json.dumps({"results": msg}).encode()
+            relay_sock.sendall(relay_msg)
+    except Exception as e:
+        print(f"Error forwarding results to inference script: {e}")
 
 def callback_server():
     """Callback server to receive final output matrix."""
@@ -19,22 +28,87 @@ def callback_server():
         print(f"Callback server listening on port {CALLBACK_PORT}...")
         conn, addr = s.accept()
         with conn:
-            data = conn.recv(10240).decode()
-            if data:
-                try:
-                    msg = json.loads(data)
-                    print("Received final output:", msg.get("matrix"))
-                except Exception as e:
-                    print("Error decoding callback message:", e)
-        
-                # Forward results to run_inference_layer
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as relay_sock:
-                        relay_sock.connect(("127.0.0.1", 9500))
-                        relay_msg = json.dumps({"results": msg}).encode()
-                        relay_sock.sendall(relay_msg)
-                except Exception as e:
-                    print(f"Error forwarding results to inference script: {e}")
+            try:
+                data = conn.recv(10240).decode()
+                msg = json.loads(data)
+                print("Received final output:", msg.get("matrix"))
+                forward_results(msg)
+            except Exception as e:
+                print("Error in callback:", e)
+
+def create_network(client, network_name):
+    try:
+        network = client.networks.create(network_name, driver="bridge")
+        print(f"Created network: {network_name}")
+        return network
+    except Exception:
+        try:
+            net = client.networks.get(network_name)
+            net.remove()
+            network = client.networks.create(network_name, driver="bridge")
+            print(f"Recreated network: {network_name}")
+            return network
+        except Exception as e:
+            print(f"Error handling network: {e}")
+            return client.networks.get(network_name)
+
+def remove_existing_containers(client, layer_mappings):
+    print("Checking for existing layer containers...")
+    for mapping in layer_mappings.values():
+        try:
+            container = client.containers.get(mapping["container_name"])
+            container.stop()
+            container.remove()
+            print(f"Removed container: {mapping['container_name']}")
+        except Exception:
+            pass
+
+def spawn_layer_containers(client, layer_mappings, network_name):
+    import os  # ensure os is imported
+    import json
+    containers = {}
+    print("Spawning layer containers...")
+    for layer_index, mapping in layer_mappings.items():
+        env = {
+            "CONTAINER_NAME": mapping["container_name"],
+            "LISTEN_PORT": str(mapping["listen_port"]),
+            "EXPECTED_INPUT_DIM": str(mapping["expected_input"]),
+            "NEXT_NODES": json.dumps(mapping["next_nodes"])
+        }
+        # Instead of passing large NEURONS inline, check its length.
+        neurons_json = json.dumps(mapping["neurons"])
+        volumes = {}
+        THRESHOLD = 1000
+        if len(neurons_json) > THRESHOLD or True:
+            # Write neuron config to a file and mount it inside the container.
+            config_dir = os.path.abspath("cache/neuron_configs")
+            os.makedirs(config_dir, exist_ok=True)
+            neuron_file_host = os.path.join(config_dir, f"layer_{layer_index}_neurons.json")
+            with open(neuron_file_host, "w") as f:
+                json.dump(mapping["neurons"], f)
+            neuron_file_container = f"/app/neuron_configs/layer_{layer_index}_neurons.json"
+            env["NEURONS_FILE"] = neuron_file_container
+            print(f"Layer {layer_index}: using NEURONS_FILE with {neuron_file_host}")
+            volumes[config_dir] = {'bind': '/app/neuron_configs', 'mode': 'ro'}
+        else:
+            env["NEURONS"] = neurons_json
+
+        ports = {f"{mapping['listen_port']}/tcp": mapping["listen_port"]} if layer_index == 0 else None
+        if layer_index == 0:
+            print(f"First layer container '{mapping['container_name']}' published on port {mapping['listen_port']}")
+        else:
+            print(f"Spawned container '{mapping['container_name']}' on port {mapping['listen_port']}")
+        container = client.containers.run(
+            "fcnn_layer_image",  # ensure this image is built with layer.py as entrypoint
+            detach=True,
+            name=mapping["container_name"],
+            network=network_name,
+            environment=env,
+            ports=ports,
+            volumes=volumes if volumes else None
+        )
+        containers[mapping["container_name"]] = container
+    return containers
 
 def main():
     start_time = time.time()
@@ -79,65 +153,16 @@ def main():
 
     client = docker.from_env()
     network_name = "fcnn_layer_network"
-    try:
-        network = client.networks.create(network_name, driver="bridge")
-        print(f"Created network: {network_name}")
-    except Exception:
-        try:
-            net = client.networks.get(network_name)
-            net.remove()
-            network = client.networks.create(network_name, driver="bridge")
-            print(f"Recreated network: {network_name}")
-        except Exception as e:
-            print(f"Error handling network: {e}")
-            network = client.networks.get(network_name)
+    network = create_network(client, network_name)
+    remove_existing_containers(client, layer_mappings)
+    containers = spawn_layer_containers(client, layer_mappings, network_name)
 
-    # Remove any previous containers
-    print("Checking for existing layer containers...")
-    for mapping in layer_mappings.values():
-        try:
-            container = client.containers.get(mapping["container_name"])
-            container.stop()
-            container.remove()
-            print(f"Removed container: {mapping['container_name']}")
-        except Exception:
-            pass
-
-    containers = {}
-    # Spawn layer containers
-    print("Spawning layer containers...")
-    for layer_index, mapping in layer_mappings.items():
-        env = {
-            "CONTAINER_NAME": mapping["container_name"],
-            "LISTEN_PORT": str(mapping["listen_port"]),
-            "EXPECTED_INPUT_DIM": str(mapping["expected_input"]),
-            "NEURONS": json.dumps(mapping["neurons"]),
-            "NEXT_NODES": json.dumps(mapping["next_nodes"])
-        }
-        ports = None
-        # publish port for the first layer (to send inputs)
-        if layer_index == 0:
-            ports = {f"{mapping['listen_port']}/tcp": mapping["listen_port"]}
-            print(f"First layer container '{mapping['container_name']}' published on port {mapping['listen_port']}")
-        else:
-            print(f"Spawned container '{mapping['container_name']}' on port {mapping['listen_port']}")
-        container = client.containers.run(
-            "fcnn_layer_image",  # ensure this image is built with layer.py as entrypoint
-            detach=True,
-            name=mapping["container_name"],
-            network=network_name,
-            environment=env,
-            ports=ports
-        )
-        containers[mapping["container_name"]] = container
-
-
-    print(f"Waiting for containers to initialize...")
+    print("Waiting for containers to initialize...")
 
     callback_thread = threading.Thread(target=callback_server, daemon=True)
     callback_thread.start()
 
-        # Start progress monitor for neuron connection establishment
+    # Start progress monitor for neuron connection establishment
     total_layers = len(layers)
     LOGFILE = 'logs/neuron_logs.txt'
     def progress_monitor():
