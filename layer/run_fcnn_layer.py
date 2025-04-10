@@ -5,11 +5,12 @@ import time
 import threading
 import platform
 
-CONFIG_FILE = "config/config_mnist.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_mnist.json"
+CONFIG_FILE = "config/config_mnist2.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_mnist2.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
+LAYER_DISTRIBUTION = [2,1]  # Use this to define the distribution of layers across containers
 
 def forward_results(msg):
     try:
@@ -23,6 +24,7 @@ def forward_results(msg):
 def callback_server():
     """Callback server to receive final output matrix."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
@@ -64,49 +66,61 @@ def remove_existing_containers(client, layer_mappings):
             pass
 
 def spawn_layer_containers(client, layer_mappings, network_name):
-    import os  # ensure os is imported
+    import os
     import json
     containers = {}
+    THRESHOLD = 1000
     print("Spawning layer containers...")
-    for layer_index, mapping in layer_mappings.items():
+    for container_index, mapping in layer_mappings.items():
         env = {
             "CONTAINER_NAME": mapping["container_name"],
             "LISTEN_PORT": str(mapping["listen_port"]),
             "EXPECTED_INPUT_DIM": str(mapping["expected_input"]),
             "NEXT_NODES": json.dumps(mapping["next_nodes"])
         }
-        # Instead of passing large NEURONS inline, check its length.
-        neurons_json = json.dumps(mapping["neurons"])
-        volumes = {}
-        THRESHOLD = 1000
-        if len(neurons_json) > THRESHOLD or True:
-            # Write neuron config to a file and mount it inside the container.
+        # Prepare NEURONS_CONFIG string from neurons_config
+        neurons_config_str = json.dumps(mapping["neurons_config"])
+        volumes = None
+        if len(neurons_config_str) > THRESHOLD:
             config_dir = os.path.abspath("cache/neuron_configs")
             os.makedirs(config_dir, exist_ok=True)
-            neuron_file_host = os.path.join(config_dir, f"layer_{layer_index}_neurons.json")
-            with open(neuron_file_host, "w") as f:
-                json.dump(mapping["neurons"], f)
-            neuron_file_container = f"/app/neuron_configs/layer_{layer_index}_neurons.json"
-            env["NEURONS_FILE"] = neuron_file_container
-            print(f"Layer {layer_index}: using NEURONS_FILE with {neuron_file_host}")
-            volumes[config_dir] = {'bind': '/app/neuron_configs', 'mode': 'ro'}
+            config_file_host = os.path.join(config_dir, f"container_{container_index}_neurons_config.json")
+            with open(config_file_host, "w") as f:
+                f.write(neurons_config_str)
+            container_config_path = f"/app/neuron_configs/container_{container_index}_neurons_config.json"
+            env["NEURONS_FILE_CONFIG"] = container_config_path
+            # Remove direct config
+            # volumes mapping for container to read the file.
+            volumes = {config_dir: {'bind': '/app/neuron_configs', 'mode': 'ro'}}
         else:
-            env["NEURONS"] = neurons_json
-
-        ports = {f"{mapping['listen_port']}/tcp": mapping["listen_port"]} if layer_index == 0 else None
-        if layer_index == 0:
+            env["NEURONS_CONFIG"] = neurons_config_str
+        
+        ports = {f"{mapping['listen_port']}/tcp": mapping["listen_port"]} if container_index == 0 else None
+        if container_index == 0:
             print(f"First layer container '{mapping['container_name']}' published on port {mapping['listen_port']}")
         else:
             print(f"Spawned container '{mapping['container_name']}' on port {mapping['listen_port']}")
-        container = client.containers.run(
-            "fcnn_layer_image",  # ensure this image is built with layer.py as entrypoint
+        # container = client.containers.run(
+        #     "fcnn_layer_image",  # ensure the image is built with layer.py as entrypoint
+        #     detach=True,
+        #     name=mapping["container_name"],
+        #     network=network_name,
+        #     environment=env,
+        #     ports=ports,
+        #     volumes=volumes
+        # )
+        container_kwargs = dict(
+            image="fcnn_layer_image",
             detach=True,
             name=mapping["container_name"],
             network=network_name,
             environment=env,
-            ports=ports,
-            volumes=volumes if volumes else None
+            ports=ports
         )
+        if volumes:
+            container_kwargs["volumes"] = volumes
+        container = client.containers.run(**container_kwargs)
+
         containers[mapping["container_name"]] = container
     return containers
 
@@ -115,39 +129,43 @@ def main():
     # Load configuration and inputs
     with open(CONFIG_FILE, "r") as f:
         config = json.load(f)
-    layers = config["layers"]
+    layers = config["layers"]  # list of layer configurations
+    distribution = config.get("layer_distribution", LAYER_DISTRIBUTION)
+    if sum(distribution) != len(layers):
+        print("Error: Sum of layer_distribution does not match number of layers in config.")
+        return
 
     with open(INPUTS_FILE, "r") as f:
         inputs = json.load(f)["examples"]
-    # Use all examples as a matrix (each example is a row)
     input_matrix = inputs
 
-    # Pre-calculate container mapping for each layer
+    # Compute container mappings based on distribution
     layer_mappings = {}
-    for layer_index, layer in enumerate(layers):
-        container_name = f"layer_{layer_index}"
-        base_port = BASE_PORT_FIRST_LAYER + (layer_index * BASE_PORT_INCREMENT)
-        listen_port = base_port + 1  # assign one port per layer container
-        # For each layer, expected input dimension is:
-        expected_input = len(input_matrix[0]) if layer_index == 0 else layers[layer_index - 1]["nodes"]
-        # Determine NEXT_NODES: if not final layer, forward to next layer container;
-        # if final, forward to callback server.
-        if layer_index < len(layers) - 1:
-            next_base_port = BASE_PORT_FIRST_LAYER + ((layer_index+1) * BASE_PORT_INCREMENT)
+    global_layer_index = 0
+    num_containers = len(distribution)
+    for container_index in range(num_containers):
+        group_count = distribution[container_index]
+        neurons_config = {}
+        for i in range(group_count):
+            key = f"layer_{i+1}"
+            neurons_config[key] = layers[global_layer_index].get("neurons", [])
+            global_layer_index += 1
+        container_name = f"layer_container_{container_index}"
+        base_port = BASE_PORT_FIRST_LAYER + (container_index * BASE_PORT_INCREMENT)
+        listen_port = base_port + 1
+        expected_input = len(input_matrix[0]) if container_index == 0 else layers[global_layer_index - group_count - 1]["nodes"]
+        if container_index < num_containers - 1:
+            next_base_port = BASE_PORT_FIRST_LAYER + ((container_index+1) * BASE_PORT_INCREMENT)
             next_port = next_base_port + 1
-            next_nodes = [{"host": f"layer_{layer_index+1}", "port": str(next_port)}]
+            next_nodes = [{"host": f"layer_container_{container_index+1}", "port": str(next_port)}]
         else:
-            if platform.system() == "Darwin":
-                gateway_ip = "host.docker.internal"
-            else:
-                # For Linux, assume a proper gateway IP is available; using localhost as placeholder.
-                gateway_ip = "127.0.0.1"
+            gateway_ip = "host.docker.internal" if platform.system() == "Darwin" else "127.0.0.1"
             next_nodes = [{"host": gateway_ip, "port": str(CALLBACK_PORT)}]
-        layer_mappings[layer_index] = {
+        layer_mappings[container_index] = {
             "container_name": container_name,
             "listen_port": listen_port,
             "expected_input": expected_input,
-            "neurons": layer.get("neurons", []),
+            "neurons_config": neurons_config,
             "next_nodes": next_nodes
         }
 
@@ -186,18 +204,6 @@ def main():
     monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
     monitor_thread.start()
     
-
-    # Send input matrix to first layer container
-    # first_mapping = layer_mappings[0]
-    # try:
-    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #         s.connect(("127.0.0.1", first_mapping["listen_port"]))
-    #         msg = json.dumps({"matrix": input_matrix}).encode()
-    #         s.sendall(msg)
-    #         print(f"Sent input matrix to layer '{first_mapping['container_name']}' on port {first_mapping['listen_port']}")
-    # except Exception as e:
-    #     print(f"Error sending input to first layer: {e}")
-
     elapsed_time = time.time() - start_time
     print(f"FCNN with layers started in {elapsed_time:.3f} seconds. Waiting for final output...")
 
