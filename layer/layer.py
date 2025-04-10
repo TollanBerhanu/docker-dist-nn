@@ -6,32 +6,35 @@ import time
 import math
 from datetime import datetime
 
+def log_to_host(message, container_name):
+    timestamped = f"{datetime.now().isoformat()} | ({container_name}) {message}"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
+            log_sock.connect(("host.docker.internal", 2345))
+            log_sock.sendall(timestamped.encode())
+    except Exception as e:
+        print(f"Logging failed: {e}")
+    print(timestamped)
+
 class Layer:
     def __init__(self):
         self.container_name = os.environ.get("CONTAINER_NAME", "layer")
         self.listen_port = int(os.environ.get("LISTEN_PORT", "8000"))
         self.expected_input_dim = int(os.environ.get("EXPECTED_INPUT_DIM", "0"))
-        self.neurons = json.loads(os.environ.get("NEURONS", "[]"))
+        # if "NEURONS_FILE" in os.environ:
+        with open(os.environ["NEURONS_FILE"], "r") as f:
+            self.neurons = json.load(f)
+        # else:
+        #     self.neurons = json.loads(os.environ.get("NEURONS", "[]"))
         self.next_nodes = json.loads(os.environ.get("NEXT_NODES", "[]"))
         self.connections = {}
         self.establish_connections()
-        self.log_msg(f"Layer initialized with {len(self.neurons)} neurons expecting input dimension {self.expected_input_dim}", 0)
+        log_to_host(f"Layer initialized with {len(self.neurons)} neurons expecting input dimension {self.expected_input_dim}", self.container_name)
     
     def log_msg(self, message, priority=0):
         if priority > 0:
             return
-        timestamped = f"{datetime.now().isoformat()} | ({self.container_name}) {message}"
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as log_sock:
-                # Using host.docker.internal to reach the host machine
-                log_sock.connect(("host.docker.internal", 2345))
-                log_sock.sendall(timestamped.encode())
-        except Exception as e:
-            # If logging fails, fallback to writing locally
-            print(f"Logging failed: {e}")
-        # Also log locally for container debugging
-        print(timestamped)
-
+        log_to_host(message, self.container_name)
 
     def connect_to_node(self, host, port, max_retries=50, retry_interval=2):
         retries = 0
@@ -39,13 +42,13 @@ class Layer:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect((host, port))
-                self.log_msg(f"Established persistent connection to {host}:{port}", 0)
+                log_to_host(f"Established persistent connection to {host}:{port}", self.container_name)
                 return s
             except Exception as e:
                 retries += 1
-                self.log_msg(f"Attempt {retries} to connect to {host}:{port} failed: {e}", 0)
+                log_to_host(f"Attempt {retries} to connect to {host}:{port} failed: {e}", self.container_name)
                 time.sleep(retry_interval)
-        self.log_msg(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", 0)
+        log_to_host(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", self.container_name)
         return None
 
     def establish_connections(self):
@@ -55,7 +58,7 @@ class Layer:
             conn = self.connect_to_node(host, port)
             if conn:
                 self.connections[(host, port)] = conn
-        self.log_msg("Connections established", 0)
+        log_to_host("Connections established", self.container_name)
 
     def relu(self, x):
         return max(0, x)
@@ -88,7 +91,7 @@ class Layer:
                 dot = sum(float(val) * float(w) for val, w in zip(row, weights)) + bias
                 outputs.append(self.activate(dot, activation))
             output_matrix.append(outputs)
-        self.log_msg(f"Processed matrix: {output_matrix}", 0)
+        self.log_msg(f"Processed matrix of dimension: [{len(output_matrix)}, {len(output_matrix[0])}]", 0)
         return output_matrix
 
     def forward_result(self, output_matrix):
@@ -107,10 +110,18 @@ class Layer:
     def handle_connection(self, conn, addr):
         self.log_msg(f"Accepted connection from {addr}", 0)
         try:
-            data = conn.recv(10240).decode()
-            if data:
+            buffer = []
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                buffer.append(data)
+                if len(data) < 4096:  # assume end-of-message
+                    break
+            full_data = b"".join(buffer).decode()
+            if full_data:
                 try:
-                    content = json.loads(data)
+                    content = json.loads(full_data)
                     matrix = content.get("matrix", [])
                     output = self.process_matrix(matrix)
                     self.forward_result(output)
@@ -131,8 +142,11 @@ class Layer:
                 threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
 
 if __name__ == "__main__":
-    layer = Layer()
     try:
+        layer = Layer()
         layer.start_server()
     except KeyboardInterrupt:
         print("Shutting down layer.")
+    except Exception as e:
+        print(f"Error starting layer: {e}")
+        log_to_host(f"Error starting layer: {e}", layer.container_name)
