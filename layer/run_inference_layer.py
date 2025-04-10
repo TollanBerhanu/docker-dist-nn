@@ -7,9 +7,8 @@ from tqdm import tqdm
 from run_fcnn_layer import INPUTS_FILE, CONFIG_FILE
 
 # Constants specific to layer-based FCNN inference
-FIRST_LAYER_PORT = 5101    # Must match the published port for layer_0 in run_fcnn_layer.py
-CALLBACK_PORT = 9500
-
+FIRST_LAYER_PORT = 5101    # Must match published port for layer_0 in run_fcnn_layer.py
+CALLBACK_PORT = 9500         # Callback port for inference results
 
 def load_example_inputs():
     """Helper to load example_inputs from INPUTS_FILE."""
