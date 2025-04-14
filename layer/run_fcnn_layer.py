@@ -5,12 +5,12 @@ import time
 import threading
 import platform
 
-CONFIG_FILE = "config/config_mnist2.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_mnist2.json"
+CONFIG_FILE = "config/mnist_model(32,10).json"
+INPUTS_FILE = "config/example_inputs/mnist_examples.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
-LAYER_DISTRIBUTION = [2,1]  # Use this to define the distribution of layers across containers
+LAYER_DISTRIBUTION = [1,1]  # Use this to define the distribution of layers across containers
 
 def forward_results(msg):
     try:

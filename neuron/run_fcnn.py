@@ -7,8 +7,8 @@ import platform
 import uuid
 from tqdm import tqdm
 
-CONFIG_FILE = "config/config_cali.json"
-INPUTS_FILE = "config/example_inputs/example_inputs_cali.json"
+CONFIG_FILE = "config/config_mnist2.json"
+INPUTS_FILE = "config/example_inputs/example_inputs_mnist2.json"
 CALLBACK_PORT = 9000
 BASE_PORT_FIRST_HIDDEN = 1100
 BASE_PORT_INCREMENT = 800
