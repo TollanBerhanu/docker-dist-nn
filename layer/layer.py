@@ -101,7 +101,16 @@ class Layer:
         return current_matrix
 
     def forward_result(self, output_matrix):
+        # --- New code to compute dimensions and data size ---
+        data_dimensions = "unknown"
+        if isinstance(output_matrix, list) and output_matrix and isinstance(output_matrix[0], list):
+            rows = len(output_matrix)
+            cols = len(output_matrix[0])
+            data_dimensions = f"[{rows} x {cols}]"
         msg = json.dumps({"matrix": output_matrix}).encode()
+        data_size = len(msg)
+        self.log_msg(f"Forwarding data with dimensions {data_dimensions} and size {data_size} bytes", 0)
+        # --- End new code ---
         for node in self.next_nodes:
             host = node["host"]
             port = int(node["port"])
