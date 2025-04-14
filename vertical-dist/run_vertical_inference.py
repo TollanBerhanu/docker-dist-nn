@@ -4,7 +4,7 @@ import time
 import sys
 import threading
 from tqdm import tqdm
-from run_fcnn_layer import INPUTS_FILE, CONFIG_FILE
+from run_vertical_fcnn import INPUTS_FILE, CONFIG_FILE
 
 # Constants specific to layer-based FCNN inference
 FIRST_LAYER_PORT = 5101    # Must match published port for layer_0 in run_fcnn_layer.py
