@@ -116,6 +116,14 @@ class Layer:
             port = int(node["port"])
             conn = self.connections.get((host, port))
             if conn:
+                self.log_msg(f"Using connection to {host}:{port} from connections pool: {conn}", 0)
+            else:
+                self.log_msg(f"No existing connection to {host}:{port} found in connections pool", 0)
+            
+            # List all connections in the pool
+            all_connections = ", ".join([f"{h}:{p}" for h, p in self.connections.keys()])
+            self.log_msg(f"Current connections in the pool: {all_connections}", 0)
+            if conn:
                 try:
                     conn.sendall(msg)
                     self.log_msg(f"Forwarded output to {host}:{port}", 0)
@@ -142,6 +150,8 @@ class Layer:
                     self.forward_result(output)
                 except Exception as e:
                     self.log_msg(f"Error processing data from {addr}: {e}", 0)
+            else:
+                self.log_msg(f"Received empty data from {addr}", 0)
         except Exception as e:
             self.log_msg(f"Error handling connection from {addr}: {e}", 0)
         finally:
@@ -149,16 +159,22 @@ class Layer:
 
     def start_server(self):
         self.log_msg(f"Listening on port {self.listen_port} ...", 0)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", self.listen_port))
-            s.listen()
-            while True:
-                conn, addr = s.accept()
-                threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", self.listen_port))
+                s.listen()
+                while True:
+                    conn, addr = s.accept()
+                    threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
+                    # self.handle_connection(conn, addr)
+        except Exception as e:
+            self.log_msg(f"Error starting server: {e}", 0)
+            
 
 if __name__ == "__main__":
     try:
         layer = Layer()
+        log_to_host(f"Starting node server...", layer.container_name)
         layer.start_server()
     except KeyboardInterrupt:
         print("Shutting down layer.")
