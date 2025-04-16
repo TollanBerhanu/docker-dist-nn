@@ -23,47 +23,27 @@ class Layer:
         self.expected_input_dim = int(os.environ.get("EXPECTED_INPUT_DIM", "0"))
         if "NEURONS_CONFIG" in os.environ:
             self.neurons_config = json.loads(os.environ["NEURONS_CONFIG"])
-            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]))]
+            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]) if x.split('_')[1].isdigit() else float('inf'))]
             log_to_host(f"Container with multiple layers: {len(self.layers)} layers", self.container_name)
         elif "NEURONS_FILE_CONFIG" in os.environ:
             with open(os.environ["NEURONS_FILE_CONFIG"], "r") as f:
                 self.neurons_config = json.load(f)
-            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]))]
+            self.layers = [self.neurons_config[key] for key in sorted(self.neurons_config, key=lambda x: int(x.split('_')[1]) if x.split('_')[1].isdigit() else float('inf'))]
             log_to_host(f"Container with multiple layers (via file): {len(self.layers)} layers", self.container_name)
         else:
             with open(os.environ["NEURONS_FILE"], "r") as f:
                 self.layers = [json.load(f)]  # single layer wrapped in a list
         self.next_nodes = json.loads(os.environ.get("NEXT_NODES", "[]"))
         log_to_host(f"Layer initialized with expected input dim {self.expected_input_dim}", self.container_name)
+        # New variables for assembling inputs from multiple nodes:
+        self.num_input_nodes = int(os.environ.get("NUM_INPUT_NODES", "1"))
+        self.input_chunks = []
+        self.input_lock = threading.Lock()
     
     def log_msg(self, message, priority=0):
         if priority > 0:
             return
         log_to_host(message, self.container_name)
-
-    # def connect_to_node(self, host, port, max_retries=50, retry_interval=2):
-    #     retries = 0
-    #     while retries < max_retries:
-    #         try:
-    #             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #             s.connect((host, port))
-    #             log_to_host(f"Established persistent connection to {host}:{port}", self.container_name)
-    #             return s
-    #         except Exception as e:
-    #             retries += 1
-    #             log_to_host(f"Attempt {retries} to connect to {host}:{port} failed: {e}", self.container_name)
-    #             time.sleep(retry_interval)
-    #     log_to_host(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", self.container_name)
-    #     return None
-
-    # def establish_connections(self):
-    #     for node in self.next_nodes:
-    #         host = node["host"]
-    #         port = int(node["port"])
-    #         conn = self.connect_to_node(host, port)
-    #         if conn:
-    #             self.connections[(host, port)] = conn
-    #     log_to_host("Connections established", self.container_name)
 
     def activate(self, values, func):
         if func == "relu":
@@ -109,14 +89,6 @@ class Layer:
         for node in self.next_nodes:
             host = node["host"]
             port = int(node["port"])
-            # conn = self.connections.get((host, port))
-            # if conn:
-            #     try:
-            #         conn.sendall(msg)
-            #         self.log_msg(f"Forwarded output to {host}:{port}", 0)
-            #     except Exception as e:
-            #         self.log_msg(f"Error forwarding to {host}:{port}: {e}", 0)
-            # NOTE: Using a new socket for each connection instead of keeping it open
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect((host, port))
@@ -140,9 +112,25 @@ class Layer:
             if full_data:
                 try:
                     content = json.loads(full_data)
-                    matrix = content.get("matrix", [])
-                    output = self.process_matrix(matrix)
-                    self.forward_result(output)
+                    matrix_fragment = content.get("matrix", [])
+                    with self.input_lock:
+                        self.input_chunks.append(matrix_fragment)
+                        self.log_msg(f"Received input fragment from {addr}. Total fragments: {len(self.input_chunks)}", 0)
+                        if len(self.input_chunks) >= self.num_input_nodes:
+                            # Merge fragments: if only one, use it directly; if multiple, merge corresponding rows horizontally.
+                            if self.num_input_nodes == 1:
+                                full_matrix = self.input_chunks[0]
+                            else:
+                                num_rows = len(self.input_chunks[0])
+                                full_matrix = []
+                                for i in range(num_rows):
+                                    combined_row = []
+                                    for frag in self.input_chunks:
+                                        combined_row.extend(frag[i])
+                                    full_matrix.append(combined_row)
+                            self.input_chunks.clear()
+                            output = self.process_matrix(full_matrix)
+                            self.forward_result(output)
                 except Exception as e:
                     self.log_msg(f"Error processing data from {addr}: {e}", 0)
             else:
