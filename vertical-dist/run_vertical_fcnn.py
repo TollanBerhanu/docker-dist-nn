@@ -5,8 +5,8 @@ import time
 import threading
 import platform
 
-CONFIG_FILE = "config/mnist_model(32,10).json"
-INPUTS_FILE = "config/example_inputs/mnist_examples.json"
+CONFIG_FILE = "config/mnist_model(10,10).json"
+INPUTS_FILE = "config/example_inputs/mnist_examples_labels.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
@@ -28,15 +28,16 @@ def callback_server():
         s.bind(("", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
-        conn, addr = s.accept()
-        with conn:
-            try:
-                data = conn.recv(10240).decode()
-                msg = json.loads(data)
-                print("Received final output:", msg.get("matrix"))
-                forward_results(msg)
-            except Exception as e:
-                print("Error in callback:", e)
+        while True:
+            conn, addr = s.accept()
+            with conn:
+                try:
+                    data = conn.recv(10240).decode()
+                    msg = json.loads(data)
+                    print("Received final output:", msg.get("matrix"))
+                    forward_results(msg)
+                except Exception as e:
+                    print("Error in callback:", e)
 
 def create_network(client, network_name):
     try:
@@ -101,7 +102,7 @@ def spawn_layer_containers(client, layer_mappings, network_name):
         else:
             print(f"Spawned container '{mapping['container_name']}' on port {mapping['listen_port']}")
         # container = client.containers.run(
-        #     "fcnn_layer_image",  # ensure the image is built with layer.py as entrypoint
+        #     "vertical_fcnn_image",  # ensure the image is built with layer.py as entrypoint
         #     detach=True,
         #     name=mapping["container_name"],
         #     network=network_name,
@@ -110,7 +111,7 @@ def spawn_layer_containers(client, layer_mappings, network_name):
         #     volumes=volumes
         # )
         container_kwargs = dict(
-            image="fcnn_layer_image",
+            image="vertical_fcnn_image",
             detach=True,
             name=mapping["container_name"],
             network=network_name,
@@ -153,7 +154,7 @@ def main():
         container_name = f"layer_container_{container_index}"
         base_port = BASE_PORT_FIRST_LAYER + (container_index * BASE_PORT_INCREMENT)
         listen_port = base_port + 1
-        expected_input = len(input_matrix[0]) if container_index == 0 else layers[global_layer_index - group_count - 1]["nodes"]
+        expected_input = len(input_matrix[0]["input"]) if container_index == 0 else layers[global_layer_index - group_count - 1]["nodes"]
         if container_index < num_containers - 1:
             next_base_port = BASE_PORT_FIRST_LAYER + ((container_index+1) * BASE_PORT_INCREMENT)
             next_port = next_base_port + 1
@@ -180,29 +181,29 @@ def main():
     callback_thread = threading.Thread(target=callback_server, daemon=True)
     callback_thread.start()
 
-    # Start progress monitor for neuron connection establishment
-    total_layers = len(layers)
-    LOGFILE = 'logs/neuron_logs.txt'
-    def progress_monitor():
-        import time
-        last_count = -1
-        while True:
-            try:
-                with open(LOGFILE, 'r') as f:
-                    lines = f.readlines()
-                count = sum(1 for line in lines if "Connections established" in line)
-                if count != last_count:
-                    print(f"Progress: {count}/{total_layers} layers have established connections.")
-                    last_count = count
-                if count >= total_layers:
-                    break
-            except Exception as e:
-                print("Progress monitor error:", e)
-            time.sleep(2)
-        print("All layers connections established.")
+    # # Start progress monitor for neuron connection establishment
+    # total_layers = len(layers)
+    # LOGFILE = 'logs/neuron_logs.txt'
+    # def progress_monitor():
+    #     import time
+    #     last_count = -1
+    #     while True:
+    #         try:
+    #             with open(LOGFILE, 'r') as f:
+    #                 lines = f.readlines()
+    #             count = sum(1 for line in lines if "Connections established" in line)
+    #             if count != last_count:
+    #                 print(f"Progress: {count}/{total_layers} layers have established connections.")
+    #                 last_count = count
+    #             if count >= total_layers:
+    #                 break
+    #         except Exception as e:
+    #             print("Progress monitor error:", e)
+    #         time.sleep(2)
+    #     print("All layers connections established.")
     
-    monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
-    monitor_thread.start()
+    # monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
+    # monitor_thread.start()
     
     elapsed_time = time.time() - start_time
     print(f"FCNN with layers started in {elapsed_time:.3f} seconds. Waiting for final output...")
