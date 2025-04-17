@@ -39,7 +39,12 @@ class Layer:
         self.num_input_nodes = int(os.environ.get("NUM_INPUT_NODES", "1"))
         self.input_chunks = []
         self.input_lock = threading.Lock()
-    
+        # New flag to indicate if this container receives raw input directly from inference.
+        self.is_input_layer = os.environ.get("IS_INPUT_LAYER", "false").lower() == "true"
+        # Remove any empty layer entries (e.g. when a container has no neurons for that layer)
+        self.layers = [layer for layer in self.layers if layer]
+        log_to_host(f"Filtered layers; now {len(self.layers)} non-empty layers", self.container_name)
+
     def log_msg(self, message, priority=0):
         if priority > 0:
             return
@@ -59,16 +64,22 @@ class Layer:
             return values
 
     def process_matrix(self, input_matrix):
-        current_matrix = input_matrix
-        expected_dim = self.expected_input_dim
+        # If this layer receives raw data, use self.expected_input_dim; otherwise, use the received row length.
+        if self.is_input_layer and len(input_matrix[0]) == self.expected_input_dim:
+            expected_dim = self.expected_input_dim
+        else:
+            expected_dim = len(input_matrix[0])
         layer_index = 1
+        current_matrix = input_matrix
         for layer in self.layers:
             output_matrix = []
             for row in current_matrix:
                 if len(row) != expected_dim:
                     raise ValueError(f"Layer {layer_index}: expected input dim {expected_dim}, got {len(row)}")
                 raw = [sum(val * w for val, w in zip(row, neuron["weights"])) + neuron["bias"] for neuron in layer]
-                activated = self.activate(raw, layer[0].get("activation", "linear"))
+                # Safe activation lookup (we know layer is non-empty)
+                func = layer[0].get("activation", "linear")
+                activated = self.activate(raw, func)
                 output_matrix.append(activated)
             if output_matrix:
                 expected_dim = len(output_matrix[0])
@@ -117,11 +128,11 @@ class Layer:
                         self.input_chunks.append(matrix_fragment)
                         self.log_msg(f"Received input fragment from {addr}. Total fragments: {len(self.input_chunks)}", 0)
                         if len(self.input_chunks) >= self.num_input_nodes:
-                            # Merge fragments: if only one, use it directly; if multiple, merge corresponding rows horizontally.
                             if self.num_input_nodes == 1:
                                 full_matrix = self.input_chunks[0]
                             else:
-                                num_rows = len(self.input_chunks[0])
+                                # Use the minimum number of rows among fragments to avoid index errors.
+                                num_rows = min(len(frag) for frag in self.input_chunks)
                                 full_matrix = []
                                 for i in range(num_rows):
                                     combined_row = []

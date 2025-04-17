@@ -5,12 +5,12 @@ import time
 import threading
 import platform
 
-CONFIG_FILE = "config/mnist_model(10,10).json"
-INPUTS_FILE = "config/example_inputs/mnist_examples_labels.json"
+CONFIG_FILE = "config/mnist_model(32,10).json"
+INPUTS_FILE = "config/example_inputs/mnist_examples_5.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
-LAYER_DISTRIBUTION = [5,5]  # Use this to define the distribution of layers across containers
+LAYER_DISTRIBUTION = [8,8,8,8]  # Use this to define the distribution of layers across containers
 
 def forward_results(msg):
     try:
@@ -28,16 +28,16 @@ def callback_server():
         s.bind(("", CALLBACK_PORT))
         s.listen()
         print(f"Callback server listening on port {CALLBACK_PORT}...")
-        while True:
-            conn, addr = s.accept()
-            with conn:
-                try:
-                    data = conn.recv(10240).decode()
-                    msg = json.loads(data)
-                    print("Received final output:", msg.get("matrix"))
-                    forward_results(msg)
-                except Exception as e:
-                    print("Error in callback:", e)
+        # while True:
+        conn, addr = s.accept()
+        with conn:
+            try:
+                data = conn.recv(10240).decode()
+                msg = json.loads(data)
+                print("Received final output:", msg.get("matrix"))
+                forward_results(msg)
+            except Exception as e:
+                print("Error in callback:", e)
 
 def create_network(client, network_name):
     try:
@@ -79,11 +79,13 @@ def spawn_layer_containers(client, layer_mappings, network_name):
             "EXPECTED_INPUT_DIM": str(mapping["expected_input"]),
             "NEXT_NODES": json.dumps(mapping["next_nodes"])
         }
-        # Set NUM_INPUT_NODES: for output container, use num_containers, else "1"
+        # Set NUM_INPUT_NODES: for output container, use len(LAYER_DISTRIBUTION), else "1"
         if mapping["container_name"] == "output_layer_container":
             env["NUM_INPUT_NODES"] = str(len(LAYER_DISTRIBUTION))
         else:
             env["NUM_INPUT_NODES"] = "1"
+        # Set IS_INPUT_LAYER: only container_0 should receive raw inference input.
+        env["IS_INPUT_LAYER"] = "true" if container_index == 0 else "false"
         # Prepare NEURONS_CONFIG string from neurons_config
         neurons_config_str = json.dumps(mapping["neurons_config"])
         volumes = None
@@ -95,26 +97,15 @@ def spawn_layer_containers(client, layer_mappings, network_name):
                 f.write(neurons_config_str)
             container_config_path = f"/app/neuron_configs/container_{container_index}_neurons_config.json"
             env["NEURONS_FILE_CONFIG"] = container_config_path
-            # Remove direct config
-            # volumes mapping for container to read the file.
             volumes = {config_dir: {'bind': '/app/neuron_configs', 'mode': 'ro'}}
         else:
             env["NEURONS_CONFIG"] = neurons_config_str
-        
+
         ports = {f"{mapping['listen_port']}/tcp": mapping["listen_port"]} if container_index == 0 else None
         if container_index == 0:
             print(f"First layer container '{mapping['container_name']}' published on port {mapping['listen_port']}")
         else:
             print(f"Spawned container '{mapping['container_name']}' on port {mapping['listen_port']}")
-        # container = client.containers.run(
-        #     "vertical_fcnn_image",  # ensure the image is built with layer.py as entrypoint
-        #     detach=True,
-        #     name=mapping["container_name"],
-        #     network=network_name,
-        #     environment=env,
-        #     ports=ports,
-        #     volumes=volumes
-        # )
         container_kwargs = dict(
             image="horizontal_fcnn_image",
             detach=True,
@@ -126,7 +117,6 @@ def spawn_layer_containers(client, layer_mappings, network_name):
         if volumes:
             container_kwargs["volumes"] = volumes
         container = client.containers.run(**container_kwargs)
-
         containers[mapping["container_name"]] = container
     return containers
 
@@ -200,7 +190,7 @@ def main():
             "next_nodes": next_nodes
         }
 
-    # Add output layer container
+    # Add output layer container with expected_input set as sum of hidden outputs (i.e. sum(distribution))
     output_base_port = BASE_PORT_FIRST_LAYER + (num_containers * BASE_PORT_INCREMENT)
     output_port = output_base_port + 1
     output_neurons_config = {"layer_output": output_layer.get("neurons", [])}
@@ -209,7 +199,7 @@ def main():
     layer_mappings[num_containers] = {
         "container_name": "output_layer_container",
         "listen_port": output_port,
-        "expected_input": len(output_layer.get("neurons", [])),
+        "expected_input": sum(distribution),
         "neurons_config": output_neurons_config,
         "next_nodes": output_next_nodes
     }
@@ -225,30 +215,6 @@ def main():
     callback_thread = threading.Thread(target=callback_server, daemon=True)
     callback_thread.start()
 
-    # # Start progress monitor for neuron connection establishment
-    # total_layers = len(layers)
-    # LOGFILE = 'logs/neuron_logs.txt'
-    # def progress_monitor():
-    #     import time
-    #     last_count = -1
-    #     while True:
-    #         try:
-    #             with open(LOGFILE, 'r') as f:
-    #                 lines = f.readlines()
-    #             count = sum(1 for line in lines if "Connections established" in line)
-    #             if count != last_count:
-    #                 print(f"Progress: {count}/{total_layers} layers have established connections.")
-    #                 last_count = count
-    #             if count >= total_layers:
-    #                 break
-    #         except Exception as e:
-    #             print("Progress monitor error:", e)
-    #         time.sleep(2)
-    #     print("All layers connections established.")
-    
-    # monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
-    # monitor_thread.start()
-    
     elapsed_time = time.time() - start_time
     print(f"FCNN with layers started in {elapsed_time:.3f} seconds. Waiting for final output...")
 
