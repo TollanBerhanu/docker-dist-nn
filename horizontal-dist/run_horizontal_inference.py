@@ -4,7 +4,7 @@ import time
 import sys
 import threading
 from tqdm import tqdm
-from run_fcnn_layer import INPUTS_FILE, CONFIG_FILE
+from run_horizontal_fcnn import INPUTS_FILE, CONFIG_FILE
 
 # Constants specific to layer-based FCNN inference
 FIRST_LAYER_PORT = 5101    # Must match published port for layer_0 in run_fcnn_layer.py
@@ -17,24 +17,23 @@ def load_example_inputs():
 
 def wait_for_results():
     start_time = time.time()
-    print("Waiting for results...")
     # Callback server to capture the final output matrix.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", CALLBACK_PORT))
         s.listen()
-        print(f"Callback server listening on port {CALLBACK_PORT}...")
+        print(f"Waiting for results on port {CALLBACK_PORT}...")
         conn, addr = s.accept()
         with conn:
             data = conn.recv(10240).decode()
             if data:
                 try:
                     msg = json.loads(data)
-                    print(f"Received final output matrix: {msg.get('results')}")
+                    # print(f"Received final output matrix: {msg.get('results')}")
                     predicted_matrix = msg.get("results", {}).get("matrix")[0]
                     max_value = max(predicted_matrix)
                     max_index = predicted_matrix.index(max_value)
-                    print(f'Predicted Probability: {max_value}, Number: {max_index}')
+                    print(f'Predicted Value: {max_index}, Probability: {max_value:.4f}')
                 except Exception as e:
                     print(f"Error decoding callback message: {e}")
     
@@ -47,19 +46,26 @@ def run_inference(input_index=0):
         print(f"Error: Input index {input_index} out of range.")
         return
     print(f"Running layer inference with input no. {input_index+1}")
+
+    # NOTE: Uncomment the next lines to run inference for all test inputs
+    # for i in range(len(example_inputs)):
+        # print(f"Running inference on input index {i}")
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(5)
             s.connect(("127.0.0.1", FIRST_LAYER_PORT))
 
-            example = example_inputs[input_index]
-            s.sendall(json.dumps({"matrix": [example]}).encode())
-            # msg = json.dumps({"matrix": example_inputs}).encode()
-            # s.sendall(msg)
+            # NOTE: Use input_index as 'i' to run inference for all test inputs
+            test_input = example_inputs[input_index]["input"]
+            test_label = example_inputs[input_index]["label"]
+            s.sendall(json.dumps({"matrix": [test_input]}).encode())
             print(f"Sent input matrix to layer_0 on port {FIRST_LAYER_PORT}")
+            
+            # NOTE: Comment the next line to run inference for all test inputs
+            return test_input, test_label
     except Exception as e:
         print(f"Error sending input to first layer: {e}")
-        return
+        return None, None
 
 if __name__ == "__main__":
     input_index = 0
@@ -73,16 +79,13 @@ if __name__ == "__main__":
         # start listener thread first
         listener = threading.Thread(target=wait_for_results, daemon=True)
         listener.start()
+        
+        # NOTE: Uncomment the next line to run inference for all test inputs
+        # run_inference()
 
-        run_inference(input_index)
+        test_input, test_label = run_inference(input_index)
+        print(f"Input matrix: {test_input[0:2]}..., True Label: {test_label}")
         listener.join()
 
-        # run_inference(input_index)
-
-        # start_time = time.time()
-        # print("Waiting for results...")
-        # wait_for_results()
-        # elapsed_time = time.time() - start_time
-        # print(f"Time for inference: {elapsed_time:.4f} seconds")
     except Exception as e:
         print(f"Error running inference: {e}")

@@ -34,8 +34,9 @@ class Layer:
             with open(os.environ["NEURONS_FILE"], "r") as f:
                 self.layers = [json.load(f)]  # single layer wrapped in a list
         self.next_nodes = json.loads(os.environ.get("NEXT_NODES", "[]"))
-        self.connections = {}
-        self.establish_connections()
+        # NOTE: Uncomment to establish persistent connections
+        # self.connections = {}
+        # self.establish_connections()
         log_to_host(f"Layer initialized with expected input dim {self.expected_input_dim}", self.container_name)
     
     def log_msg(self, message, priority=0):
@@ -43,29 +44,30 @@ class Layer:
             return
         log_to_host(message, self.container_name)
 
-    def connect_to_node(self, host, port, max_retries=50, retry_interval=2):
-        retries = 0
-        while retries < max_retries:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.connect((host, port))
-                log_to_host(f"Established persistent connection to {host}:{port}", self.container_name)
-                return s
-            except Exception as e:
-                retries += 1
-                log_to_host(f"Attempt {retries} to connect to {host}:{port} failed: {e}", self.container_name)
-                time.sleep(retry_interval)
-        log_to_host(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", self.container_name)
-        return None
+    # NOTE: Uncomment to establish persistent connections
+    # def connect_to_node(self, host, port, max_retries=50, retry_interval=2):
+    #     retries = 0
+    #     while retries < max_retries:
+    #         try:
+    #             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #             s.connect((host, port))
+    #             log_to_host(f"Established persistent connection to {host}:{port}", self.container_name)
+    #             return s
+    #         except Exception as e:
+    #             retries += 1
+    #             log_to_host(f"Attempt {retries} to connect to {host}:{port} failed: {e}", self.container_name)
+    #             time.sleep(retry_interval)
+    #     log_to_host(f"Failed to establish connection to {host}:{port} after {max_retries} attempts", self.container_name)
+    #     return None
 
-    def establish_connections(self):
-        for node in self.next_nodes:
-            host = node["host"]
-            port = int(node["port"])
-            conn = self.connect_to_node(host, port)
-            if conn:
-                self.connections[(host, port)] = conn
-        log_to_host("Connections established", self.container_name)
+    # def establish_connections(self):
+    #     for node in self.next_nodes:
+    #         host = node["host"]
+    #         port = int(node["port"])
+    #         conn = self.connect_to_node(host, port)
+    #         if conn:
+    #             self.connections[(host, port)] = conn
+    #     log_to_host("Connections established", self.container_name)
 
     def activate(self, values, func):
         if func == "relu":
@@ -80,10 +82,9 @@ class Layer:
         else:  # linear
             return values
 
-
     def process_matrix(self, input_matrix):
         current_matrix = input_matrix
-        expected_dim = self.expected_input_dim   # use local variable instead of self.expected_input_dim
+        expected_dim = self.expected_input_dim
         layer_index = 1
         for layer in self.layers:
             output_matrix = []
@@ -101,7 +102,6 @@ class Layer:
         return current_matrix
 
     def forward_result(self, output_matrix):
-        # --- New code to compute dimensions and data size ---
         data_dimensions = "unknown"
         if isinstance(output_matrix, list) and output_matrix and isinstance(output_matrix[0], list):
             rows = len(output_matrix)
@@ -110,17 +110,26 @@ class Layer:
         msg = json.dumps({"matrix": output_matrix}).encode()
         data_size = len(msg)
         self.log_msg(f"Forwarding data with dimensions {data_dimensions} and size {data_size} bytes", 0)
-        # --- End new code ---
         for node in self.next_nodes:
             host = node["host"]
             port = int(node["port"])
-            conn = self.connections.get((host, port))
-            if conn:
-                try:
-                    conn.sendall(msg)
+            # NOTE: Uncomment to establish persistent connections
+            # conn = self.connections.get((host, port))
+            # if conn:
+            #     try:
+            #         conn.sendall(msg)
+            #         self.log_msg(f"Forwarded output to {host}:{port}", 0)
+            #     except Exception as e:
+            #         self.log_msg(f"Error forwarding to {host}:{port}: {e}", 0)
+            
+            # NOTE: Using a new socket for each connection instead of keeping it open
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((host, port))
+                    s.sendall(msg)
                     self.log_msg(f"Forwarded output to {host}:{port}", 0)
-                except Exception as e:
-                    self.log_msg(f"Error forwarding to {host}:{port}: {e}", 0)
+            except Exception as e:
+                self.log_msg(f"Error forwarding to {host}:{port}: {e}", 0)
 
     def handle_connection(self, conn, addr):
         self.log_msg(f"Accepted connection from {addr}", 0)
@@ -142,6 +151,8 @@ class Layer:
                     self.forward_result(output)
                 except Exception as e:
                     self.log_msg(f"Error processing data from {addr}: {e}", 0)
+            else:
+                self.log_msg(f"Received empty data from {addr}", 0)
         except Exception as e:
             self.log_msg(f"Error handling connection from {addr}: {e}", 0)
         finally:
@@ -149,16 +160,20 @@ class Layer:
 
     def start_server(self):
         self.log_msg(f"Listening on port {self.listen_port} ...", 0)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", self.listen_port))
-            s.listen()
-            while True:
-                conn, addr = s.accept()
-                threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", self.listen_port))
+                s.listen()
+                while True:
+                    conn, addr = s.accept()
+                    threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
+        except Exception as e:
+            self.log_msg(f"Error starting server: {e}", 0)
 
 if __name__ == "__main__":
     try:
         layer = Layer()
+        log_to_host(f"Starting node server...", layer.container_name)
         layer.start_server()
     except KeyboardInterrupt:
         print("Shutting down layer.")
