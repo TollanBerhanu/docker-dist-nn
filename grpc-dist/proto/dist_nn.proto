@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package grpc_dist_nn;
+
+message Row {
+  repeated double values = 1;
+}
+
+message Matrix {
+  repeated Row rows = 1;
+}
+
+service LayerService {
+  rpc Process (Matrix) returns (Matrix);
+}

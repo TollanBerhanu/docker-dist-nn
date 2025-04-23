@@ -1,5 +1,15 @@
 FROM python:3.9-slim
 WORKDIR /app
-COPY vertical_node.py /app/vertical_node.py
 
-CMD ["python", "vertical_node.py"]
+# Install dependencies
+RUN pip install grpcio grpcio-tools numpy
+
+# Copy proto definitions and generate gRPC code into proto package
+COPY proto/ ./proto
+# Generate Python gRPC code into `proto/` directory
+RUN python -m grpc_tools.protoc -I./proto --python_out=./proto --grpc_python_out=./proto proto/dist_nn.proto
+
+# Copy application code
+COPY grpc_node.py run_grpc_fcnn.py run_grpc_inference.py .
+
+CMD ["python", "grpc_node.py"]
