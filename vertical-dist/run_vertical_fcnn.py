@@ -6,7 +6,7 @@ import threading
 import platform
 
 CONFIG_FILE = "config/mnist_model(10,10).json"
-INPUTS_FILE = "config/example_inputs/mnist_examples_labels.json"
+INPUTS_FILE = "config/example_inputs/mnist_examples_5.json"
 CALLBACK_PORT = 9100
 BASE_PORT_FIRST_LAYER = 5100    # Base port for the first layer
 BASE_PORT_INCREMENT = 100        # Increment per layer
