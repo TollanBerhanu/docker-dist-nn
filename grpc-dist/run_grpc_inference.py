@@ -7,6 +7,7 @@ import grpc
 import argparse
 import logging
 import numpy as np
+import math
 from typing import List, Dict, Any, Optional, Tuple
 
 # Ensure local 'proto' directory is on sys.path for generated stubs
@@ -22,7 +23,7 @@ except ImportError:
     sys.exit(1)
 
 # --- Configuration ---
-DEFAULT_INPUTS_FILE = os.path.join(SCRIPT_DIR, "../config/example_inputs/mnist_examples_5.json")
+DEFAULT_INPUTS_FILE = os.path.join(SCRIPT_DIR, "../config/example_inputs/mnist_examples_60000.json")
 DEFAULT_FIRST_LAYER_PORT = 5101 # Must match published port in run_grpc_fcnn.py
 DEFAULT_GRPC_TIMEOUT = 10 # seconds
 
@@ -106,65 +107,100 @@ def run_single_inference(
         logging.error(f"An unexpected error occurred during inference after {elapsed_time:.4f}s: {e}")
         return None, elapsed_time
 
+def run_batch_inference(
+    input_batch: list,
+    first_layer_address: str,
+    timeout: float
+) -> tuple:
+    """Runs a batch inference pass via gRPC."""
+    rows = [dist_nn_pb2.Row(values=inp) for inp in input_batch]
+    matrix_msg = dist_nn_pb2.Matrix(rows=rows)
+    start_time = time.monotonic()
+    try:
+        with grpc.insecure_channel(first_layer_address) as channel:
+            grpc.channel_ready_future(channel).result(timeout=timeout/2)
+            stub = dist_nn_pb2_grpc.LayerServiceStub(channel)
+            response = stub.Process(matrix_msg, timeout=timeout)
+            elapsed = time.monotonic() - start_time
+            if not response.rows:
+                logging.warning("Received empty matrix in batch response.")
+                return None, elapsed
+            output = np.array([row.values for row in response.rows])
+            return output, elapsed
+    except grpc.RpcError as e:
+        elapsed = time.monotonic() - start_time
+        logging.error(f"Batch gRPC call failed after {elapsed:.4f}s: {e.code()} - {e.details()}")
+        return None, elapsed
+    except Exception as e:
+        elapsed = time.monotonic() - start_time
+        logging.error(f"Unexpected batch error after {elapsed:.4f}s: {e}")
+        return None, elapsed
 
 # --- Main Execution ---
 
-def main(inputs_file: str, input_index: int, first_layer_port: int, grpc_timeout: float):
-    """Loads data and runs inference for the specified input index."""
+def main(inputs_file: str, input_index: Optional[int], first_layer_port: int, grpc_timeout: float, batch_size: Optional[int]):
+    """Loads data and runs inference for the specified input index or in batches."""
     
     try:
         examples = load_example_inputs(inputs_file)
+        num_examples = len(examples)
+        if not examples:
+            logging.error("No examples loaded, cannot run inference.")
+            return
     except Exception:
         return # Error already logged
 
-    if not examples:
-        logging.error("No examples loaded, cannot run inference.")
-        return
+    if input_index is not None:
+        if not 0 <= input_index < len(examples):
+            logging.error(f"Input index {input_index} is out of range (0-{len(examples)-1}).")
+            return
+        examples = [examples[input_index]] # Select specific example
 
-    if not 0 <= input_index < len(examples):
-        logging.error(f"Input index {input_index} is out of range (0-{len(examples)-1}).")
-        return
+    correct_predictions = 0
+    total_start = time.monotonic()
 
-    selected_example = examples[input_index]
-    test_input = selected_example.get("input")
-    test_label = selected_example.get("label") # Optional
-
-    if test_input is None:
-        logging.error(f"Example at index {input_index} does not contain 'input' data.")
-        return
-
-    logging.info(f"Running inference for input index {input_index} from {inputs_file}.")
-    if test_label is not None:
-        logging.info(f"True Label: {test_label}")
-    
     first_layer_address = f"127.0.0.1:{first_layer_port}"
-
-    output_values, elapsed_time = run_single_inference(test_input, test_label, first_layer_address, grpc_timeout)
-
-    if output_values is not None and elapsed_time is not None:
-        logging.info(f"Inference completed in {elapsed_time:.4f} seconds.")
-        logging.info(f"Raw output vector (first 10 elements): {output_values[:10]}")
-        
-        # Calculate prediction (index of max value)
-        if output_values.size > 0:
-             predicted_index = np.argmax(output_values)
-             probability = output_values[predicted_index]
-             logging.info(f"Predicted Class: {predicted_index}, Probability: {probability:.4f}")
-        else:
-             logging.warning("Output vector is empty.")
-
+    # determine batch processing
+    if batch_size is None or batch_size >= num_examples:
+        # single batch of all examples
+        inputs = [ex.get("input") for ex in examples]
+        labels = [ex.get("label") for ex in examples]
+        outputs, elapsed = run_batch_inference(inputs, first_layer_address, grpc_timeout)
+        if outputs is not None:
+            for idx, output_vals in enumerate(outputs):
+                pred = np.argmax(output_vals) if output_vals.size>0 else None
+                if labels[idx] == pred:
+                    correct_predictions += 1
+        logging.info(f"Batch inference completed in {elapsed:.4f} seconds for {num_examples} examples.")
     else:
-        logging.error("Inference failed.")
+        # process in chunks
+        num_batches = math.ceil(num_examples / batch_size)
+        for b in range(num_batches):
+            start = b * batch_size
+            end = min(start + batch_size, num_examples)
+            batch_ex = examples[start:end]
+            inputs = [ex.get("input") for ex in batch_ex]
+            labels = [ex.get("label") for ex in batch_ex]
+            outputs, elapsed = run_batch_inference(inputs, first_layer_address, grpc_timeout)
+            if outputs is not None:
+                for idx, output_vals in enumerate(outputs):
+                    pred = np.argmax(output_vals) if output_vals.size>0 else None
+                    if labels[idx] == pred:
+                        correct_predictions += 1
+            logging.info(f"Batch {b+1}/{num_batches} completed in {elapsed:.4f} seconds ({end-start} examples).")
 
+    total_elapsed = time.monotonic() - total_start
+    logging.info(f"Total inference time: {total_elapsed:.4f} seconds")
+    logging.info(f"Correct predictions: {correct_predictions} out of {num_examples}")
+    logging.info("Inference process completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference on a distributed FCNN via gRPC.")
     parser.add_argument(
         "input_index",
         type=int,
-        nargs='?', # Make index optional
-        default=0,
-        help="Index of the input example to use from the inputs file (default: 0)."
+        nargs='?', 
+        help="Index of the input example to use (default: all examples)."
     )
     parser.add_argument(
         "--inputs",
@@ -184,6 +220,12 @@ if __name__ == "__main__":
         default=DEFAULT_GRPC_TIMEOUT,
         help=f"gRPC call timeout in seconds (default: {DEFAULT_GRPC_TIMEOUT})."
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Number of examples per batch (default: all examples in one batch)."
+    )
     args = parser.parse_args()
 
-    main(args.inputs, args.input_index, args.port, args.timeout)
+    main(args.inputs, args.input_index, args.port, args.timeout, args.batch_size)
