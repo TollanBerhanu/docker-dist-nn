@@ -107,32 +107,53 @@ def run_single_inference(
         logging.error(f"An unexpected error occurred during inference after {elapsed_time:.4f}s: {e}")
         return None, elapsed_time
 
+# --- Efficient persistent‐stub batch inference ---
+
 def run_batch_inference(
-    input_batch: list,
+    input_batch: List[List[float]],
     first_layer_address: str,
     timeout: float
-) -> tuple:
-    """Runs a batch inference pass via gRPC."""
-    rows = [dist_nn_pb2.Row(values=inp) for inp in input_batch]
-    matrix_msg = dist_nn_pb2.Matrix(rows=rows)
-    start_time = time.monotonic()
+) -> Tuple[Optional[np.ndarray], float]:
+    """
+    Runs a batch inference pass via gRPC, reusing the same channel & stub
+    across multiple calls to avoid repeated connection setup.
+    """
+    # On first call, create & cache the channel and stub
+    if not hasattr(run_batch_inference, "_stub"):
+        # allow large payloads
+        options = [
+            ('grpc.max_send_message_length', -1),
+            ('grpc.max_receive_message_length', -1),
+        ]
+        channel = grpc.insecure_channel(first_layer_address, options=options)
+        # wait once for channel readiness
+        grpc.channel_ready_future(channel).result(timeout=timeout/2)
+        run_batch_inference._stub = dist_nn_pb2_grpc.LayerServiceStub(channel)
+
+    stub = run_batch_inference._stub
+    # build batched request
+    matrix_msg = dist_nn_pb2.Matrix(
+        rows=[dist_nn_pb2.Row(values=inp) for inp in input_batch]
+    )
+
+    start = time.monotonic()
     try:
-        with grpc.insecure_channel(first_layer_address) as channel:
-            grpc.channel_ready_future(channel).result(timeout=timeout/2)
-            stub = dist_nn_pb2_grpc.LayerServiceStub(channel)
-            response = stub.Process(matrix_msg, timeout=timeout)
-            elapsed = time.monotonic() - start_time
-            if not response.rows:
-                logging.warning("Received empty matrix in batch response.")
-                return None, elapsed
-            output = np.array([row.values for row in response.rows])
-            return output, elapsed
+        resp = stub.Process(matrix_msg, timeout=timeout)
+        elapsed = time.monotonic() - start
+        if not resp.rows:
+            logging.warning("Received empty matrix in batch response.")
+            return None, elapsed
+        # stack each row's values into a 2D array
+        output = np.vstack([row.values for row in resp.rows])
+        return output, elapsed
+
     except grpc.RpcError as e:
-        elapsed = time.monotonic() - start_time
+        elapsed = time.monotonic() - start
         logging.error(f"Batch gRPC call failed after {elapsed:.4f}s: {e.code()} - {e.details()}")
         return None, elapsed
+
     except Exception as e:
-        elapsed = time.monotonic() - start_time
+        elapsed = time.monotonic() - start
         logging.error(f"Unexpected batch error after {elapsed:.4f}s: {e}")
         return None, elapsed
 

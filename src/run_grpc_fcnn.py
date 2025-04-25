@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple
 # --- Configuration ---
 # Use relative paths from the script's location
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CONFIG_FILE = os.path.join(SCRIPT_DIR, "../config/mnist_model(10,10).json")
+DEFAULT_CONFIG_FILE = os.path.join(SCRIPT_DIR, "../config/mnist_model(10).json")
 DEFAULT_INPUTS_FILE = os.path.join(SCRIPT_DIR, "../config/example_inputs/mnist_examples_5.json")
 
 # Network and Container Config
@@ -20,7 +20,7 @@ DOCKER_IMAGE_NAME = "grpc_layer_image"
 CONTAINER_NAME_PREFIX = "layer_container_"
 BASE_PORT_FIRST_LAYER = 5100
 BASE_PORT_INCREMENT = 100
-DEFAULT_LAYER_DISTRIBUTION = [1, 1] # Default if not in config
+DEFAULT_LAYER_DISTRIBUTION = [1] # Default if not in config
 
 # Readiness Check
 READINESS_CHECK_TIMEOUT = 10 # seconds
